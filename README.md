@@ -3,6 +3,11 @@
 Application Spring Boot 3.5.6 (Java 25) organisée en couches
 `Controller → Service → Repository → Model`, avec JPA/H2 et validation.
 
+> 📘 **Vous voulez comprendre, pas seulement utiliser ?**
+> Consultez **[docs/APPRENDRE.md](docs/APPRENDRE.md)** : comment Swagger / OpenAPI a été
+> intégré (auto-configuration, génération du JSON, `@ResponseStatus`, `/docs`), pourquoi
+> chaque correction a été faite, et 9 exercices guidés à réaliser soi-même.
+
 ## 1. Lancer le projet
 
 Prérequis : **JDK 25** (le `pom.xml` fixe `<java.version>25</java.version>`).
