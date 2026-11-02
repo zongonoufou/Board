@@ -1,5 +1,9 @@
 package com.example.Board.controller;
 
+import com.example.Board.dto.UserRequest;
+import com.example.Board.dto.UserResponse;
+import com.example.Board.dto.UserUpdateRequest;
+import com.example.Board.mapper.UserMapper;
 import com.example.Board.model.User;
 import com.example.Board.service.UserService;
 import jakarta.validation.Valid;
@@ -20,7 +24,11 @@ import java.util.List;
 
 /**
  * Couche Controller : expose l'API REST pour les utilisateurs.
- * Aucune logique metier ici : reception HTTP -> delegation au Service.
+ *
+ * Frontiere HTTP : on recoit des DTO de REQUETE, on les traduit en entites
+ * avec UserMapper, on delegue au Service (qui ne connait que les entites),
+ * puis on traduit le resultat en DTO de REPONSE. Aucune entite JPA ne sort
+ * d'ici : le contrat JSON est independant du modele de persistance.
  *
  * POST   /api/users       -> creer un utilisateur
  * GET    /api/users       -> lister tous les utilisateurs
@@ -37,25 +45,27 @@ public class UserController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public ResponseEntity<User> createUser(@Valid @RequestBody User user) {
-        User created = userService.createUser(user);
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    public ResponseEntity<UserResponse> createUser(@Valid @RequestBody UserRequest request) {
+        User created = userService.createUser(UserMapper.toEntity(request));
+        return ResponseEntity.status(HttpStatus.CREATED).body(UserMapper.toResponse(created));
     }
 
     @GetMapping
-    public ResponseEntity<List<User>> getAllUsers() {
-        return ResponseEntity.ok(userService.getAllUsers());
+    public ResponseEntity<List<UserResponse>> getAllUsers() {
+        return ResponseEntity.ok(userService.getAllUsers().stream()
+                .map(UserMapper::toResponse).toList());
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<User> getUserById(@PathVariable("id") Long id) {
-        return ResponseEntity.ok(userService.getUserById(id));
+    public ResponseEntity<UserResponse> getUserById(@PathVariable("id") Long id) {
+        return ResponseEntity.ok(UserMapper.toResponse(userService.getUserById(id)));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<User> updateUser(@PathVariable("id") Long id,
-                                           @RequestBody User user) {
-        return ResponseEntity.ok(userService.updateUser(id, user));
+    public ResponseEntity<UserResponse> updateUser(@PathVariable("id") Long id,
+                                                   @Valid @RequestBody UserUpdateRequest request) {
+        User updated = userService.updateUser(id, UserMapper.toEntity(request));
+        return ResponseEntity.ok(UserMapper.toResponse(updated));
     }
 
     @DeleteMapping("/{id}")

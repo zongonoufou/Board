@@ -43,19 +43,35 @@ class BoardApiIntegrationTest {
         ResponseEntity<String> docs = restTemplate.getForEntity("/docs", String.class);
         assertThat(docs.getStatusCode().is2xxSuccessful() || docs.getStatusCode().is3xxRedirection())
                 .isTrue();
-        assertThat(restTemplate.getForEntity("/v3/api-docs", String.class)
-                .getStatusCode().is2xxSuccessful()).isTrue();
+        ResponseEntity<JsonNode> apiDocs =
+                restTemplate.getForEntity("/v3/api-docs", JsonNode.class);
+        assertThat(apiDocs.getStatusCode().is2xxSuccessful()).isTrue();
+        JsonNode schemas = apiDocs.getBody().path("components").path("schemas");
+        // La documentation decrit les DTO, plus les entites JPA : le contrat
+        // HTTP est desormais independant du modele de persistance.
+        assertThat(schemas.has("UserRequest")).isTrue();
+        assertThat(schemas.has("UserResponse")).isTrue();
+        assertThat(schemas.has("BoardRequest")).isTrue();
+        assertThat(schemas.has("BoardResponse")).isTrue();
+        assertThat(schemas.has("TaskRequest")).isTrue();
+        assertThat(schemas.has("TaskResponse")).isTrue();
+        assertThat(schemas.has("StatusUpdateRequest")).isTrue();
+        assertThat(schemas.has("User")).isFalse();
+        assertThat(schemas.has("Board")).isFalse();
+        assertThat(schemas.has("Task")).isFalse();
 
         Map<String, Object> user = new HashMap<>();
         user.put("firstName", "Ada");
         user.put("lastName", "Lovelace");
         user.put("email", "ada.integration@example.com");
+        user.put("id", 999);          // tentative de mass assignment : doit etre ignoree
 
         ResponseEntity<JsonNode> createdUser =
                 restTemplate.postForEntity("/api/users", user, JsonNode.class);
         assertThat(createdUser.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         JsonNode userBody = createdUser.getBody();
         long userId = userBody.get("id").asLong();
+        assertThat(userId).isNotEqualTo(999);
         assertThat(userBody.get("firstName").asText()).isEqualTo("Ada");
         assertThat(userBody.has("boards")).isFalse();
 

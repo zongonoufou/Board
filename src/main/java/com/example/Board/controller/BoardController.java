@@ -1,5 +1,9 @@
 package com.example.Board.controller;
 
+import com.example.Board.dto.BoardRequest;
+import com.example.Board.dto.BoardResponse;
+import com.example.Board.dto.BoardUpdateRequest;
+import com.example.Board.mapper.BoardMapper;
 import com.example.Board.model.Board;
 import com.example.Board.service.BoardService;
 import jakarta.validation.Valid;
@@ -13,14 +17,15 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
 /**
  * Couche Controller : expose l'API REST pour les tableaux (Board).
+ * Meme principe que UserController : DTO en entree, DTO en sortie.
  *
  * POST   /api/boards?ownerId={id}  -> creer un tableau
  * GET    /api/boards               -> lister tous les tableaux
@@ -38,30 +43,31 @@ public class BoardController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public ResponseEntity<Board> createBoard(@RequestParam("ownerId") Long ownerId,
-                                             @Valid @RequestBody Board board) {
-        Board created = boardService.createBoard(ownerId, board);
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    public ResponseEntity<BoardResponse> createBoard(@RequestParam("ownerId") Long ownerId,
+                                                     @Valid @RequestBody BoardRequest request) {
+        Board created = boardService.createBoard(ownerId, BoardMapper.toEntity(request));
+        return ResponseEntity.status(HttpStatus.CREATED).body(BoardMapper.toResponse(created));
     }
 
     @GetMapping
-    public ResponseEntity<List<Board>> getBoards(
+    public ResponseEntity<List<BoardResponse>> getBoards(
             @RequestParam(name = "ownerId", required = false) Long ownerId) {
         List<Board> boards = (ownerId == null)
                 ? boardService.getAllBoards()
                 : boardService.getBoardsByOwner(ownerId);
-        return ResponseEntity.ok(boards);
+        return ResponseEntity.ok(boards.stream().map(BoardMapper::toResponse).toList());
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<Board> getBoardById(@PathVariable("id") Long id) {
-        return ResponseEntity.ok(boardService.getBoardById(id));
+    public ResponseEntity<BoardResponse> getBoardById(@PathVariable("id") Long id) {
+        return ResponseEntity.ok(BoardMapper.toResponse(boardService.getBoardById(id)));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<Board> updateBoard(@PathVariable("id") Long id,
-                                             @RequestBody Board board) {
-        return ResponseEntity.ok(boardService.updateBoard(id, board));
+    public ResponseEntity<BoardResponse> updateBoard(@PathVariable("id") Long id,
+                                                     @Valid @RequestBody BoardUpdateRequest request) {
+        Board updated = boardService.updateBoard(id, BoardMapper.toEntity(request));
+        return ResponseEntity.ok(BoardMapper.toResponse(updated));
     }
 
     @DeleteMapping("/{id}")

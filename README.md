@@ -6,10 +6,10 @@ Application Spring Boot 3.5.6 (Java 17+) organisée en couches
 > 📘 **Vous voulez comprendre, pas seulement utiliser ?**
 > Consultez **[docs/APPRENDRE.md](docs/APPRENDRE.md)** : comment Swagger / OpenAPI a été
 > intégré (auto-configuration, génération du JSON, `@ResponseStatus`, `/docs`), pourquoi
-> chaque correction a été faite, et 12 exercices guidés à réaliser soi-même.
+> chaque correction a été faite, et 13 exercices guidés à réaliser soi-même.
 >
 > 🧪 **Vous voulez tester maintenant ?** Suivez
-> **[docs/TESTER.md](docs/TESTER.md)** : 3 niveaux pas à pas (16 tests → H2 →
+> **[docs/TESTER.md](docs/TESTER.md)** : 3 niveaux pas à pas (23 tests → H2 →
 > PostgreSQL), commandes PowerShell prêtes à copier et sorties attendues.
 
 ## 1. Lancer le projet
@@ -93,6 +93,21 @@ dépendance `runtime` pour un déploiement réel.
 
 Statuts valides : `A_FAIRE`, `EN_COURS`, `TERMINE`.
 
+**Contrat HTTP = DTO, jamais entité JPA.** Les contrôleurs reçoivent et
+renvoient des objets dédiés (`dto/`), traduits par les `mapper/` :
+
+| Agrégat | Entrée (POST) | Entrée (PUT partiel) | Sortie |
+|---------|---------------|----------------------|--------|
+| User | `UserRequest` | `UserUpdateRequest` | `UserResponse` |
+| Board | `BoardRequest` | `BoardUpdateRequest` | `BoardResponse` |
+| Task | `TaskRequest` | `TaskUpdateRequest` | `TaskResponse` |
+| Statut | — | `StatusUpdateRequest` (PATCH) | `TaskResponse` |
+
+Les corps JSON restent **identiques** à la version précédente, mais `id`,
+`createdAt`, `ownerId`, `boardId`, `status` à la création et les relations ne
+peuvent plus être imposés par le client. Voir la section 6 et la **section B.9**
+du guide.
+
 Exemple de création :
 
 ```bash
@@ -131,8 +146,13 @@ Spring MVC (`ErrorResponse`) : une URL inexistante renvoie bien **404**, pas 500
   (codes HTTP, validation, CRUD complet, changement de statut, cascade de
   suppression, sérialisation JSON).
 - `BoardApplicationTests` : chargement du contexte Spring.
+- `DtoBoundaryTest` (7 tests, sans contexte Spring) : protection contre le
+  *mass assignment*, champs serveur ignorés, absence de relations JPA dans
+  les réponses, mise à jour partielle.
+- `BoardApiIntegrationTest` vérifie aussi que `/v3/api-docs` documente les DTO
+  et **plus** les entités `User` / `Board` / `Task`.
 
-Soit **16 tests**, tous verts (`./mvnw clean verify`). Procédure détaillée,
+Soit **23 tests**, tous verts (`./mvnw clean verify`). Procédure détaillée,
 commande par commande : [`docs/TESTER.md`](docs/TESTER.md).
 
 Les deux tests qui démarrent un contexte Spring (`BoardApplicationTests`,
@@ -141,17 +161,46 @@ Les deux tests qui démarrent un contexte Spring (`BoardApplicationTests`,
 **toujours H2 en mémoire**, même si la machine définit `SPRING_DATASOURCE_URL`
 ou un mot de passe PostgreSQL : les tests ne dépendent plus de l'environnement.
 
-## 6. Piste d'amélioration
+## 6. Couche DTO : pourquoi le contrat HTTP est découplé
 
-Pour une API publique, remplacer l'exposition directe des entités JPA par des
-DTO de requête/réponse afin de découpler complètement le contrat HTTP du
-modèle de persistance.
+Avant, les contrôleurs prenaient et renvoyaient directement `User`, `Board` et
+`Task`. Il fallait alors `@JsonIgnore`, `@JsonProperty(access = READ_ONLY)` et
+des getters calculés (`getOwnerId()`, `getBoardId()`) pour éviter les proxies
+Hibernate, les références circulaires et les champs imposés par le client.
+**L'entité servait à la fois de modèle de base et de contrat public** : ajouter
+un champ à la base changeait l'API sans qu'on l'ait décidé.
+
+Désormais trois familles de DTO par agrégat :
+
+- **Request** (POST) : uniquement les champs que le client peut fournir, avec
+  les contraintes Bean Validation ; `@JsonIgnoreProperties(ignoreUnknown = true)`
+  ignore `id`, `createdAt`, `ownerId`, `boardId`, `status`, relations…
+- **UpdateRequest** (PUT) : mêmes champs mais **tous optionnels** (`@Size(min=1)`
+  au lieu de `@NotBlank`), car un champ absent signifie « ne pas modifier ».
+- **Response** : champs lisibles, `id` / `createdAt` / `ownerId` / `boardId`
+  documentés `readOnly` via `@Schema(accessMode = READ_ONLY)`, aucune relation.
+
+Les `mapper/` font la traduction explicitement, champ par champ, à la frontière
+du contrôleur. Les **services restent inchangés** et continuent de manipuler des
+entités : ils portent les règles métier et les relations JPA, et sont réutilisables
+hors HTTP. Les annotations Jackson présentes sur les entités ne définissent plus
+le contrat : elles restent comme filet de sécurité contre une sérialisation
+accidentelle.
+
+Conséquence vérifiable : `/v3/api-docs` contient **10 schémas DTO**
+(`UserRequest`, `UserResponse`, …, `StatusUpdateRequest`) et **aucun** schéma
+`User`, `Board` ou `Task`. Le JSON échangé, lui, n'a pas changé d'un octet.
+
+Pistes suivantes : MapStruct pour générer les mappers, DTO de pagination,
+`@Schema` d'exemples, et Spring Security + DTO d'authentification.
 
 ## 7. Dépannage : « password authentication failed for user "postgres" »
 
-Si `./mvnw clean verify` affiche 14 tests verts et **2 erreurs** sur les tests
-Spring, ce n'est ni Swagger ni Mockito : une configuration **externe** à votre
-machine a remplacé le H2 du projet par PostgreSQL. Vérifiez :
+Si `./mvnw clean verify` échoue **uniquement sur les deux tests Spring** (dans
+le log d'origine : 14 verts / 2 erreurs, la suite comptait alors 16 tests ;
+aujourd'hui ce serait 21 / 2), ce n'est ni Swagger ni Mockito : une
+configuration **externe** à votre machine a remplacé le H2 du projet par
+PostgreSQL. Vérifiez :
 
 ```bash
 # Git Bash / terminal

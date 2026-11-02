@@ -23,7 +23,7 @@
 | **Swagger UI** | Une **page web** qui lit un document OpenAPI et affiche une documentation interactive avec un bouton « Try it out » | `/docs` |
 | **springdoc-openapi** | La bibliothèque qui **fabrique** le document OpenAPI en analysant votre code Spring | La dépendance du `pom.xml` |
 | **springfox** | L'ancienne bibliothèque de l'époque Spring Boot 2 / `javax.*` | ❌ Incompatible avec Spring Boot 3 / `jakarta.*` |
-| **JSON Schema** | Le sous-langage d'OpenAPI qui décrit la forme des objets | `components.schemas.Task` |
+| **JSON Schema** | Le sous-langage d'OpenAPI qui décrit la forme des objets | `components.schemas.TaskResponse` |
 | **WebJar** | Un fichier `.jar` qui contient du HTML/JS/CSS au lieu de classes Java | `swagger-ui-5.28.1.jar` contient `index.html` |
 
 **Analogie** : OpenAPI est le *plan* de la maison, Swagger UI est la *visite guidée*,
@@ -202,7 +202,7 @@ Exemple réel, extrait de `POST /api/boards/{boardId}/tasks` dans `/v3/api-docs`
   ],
   "requestBody": {
     "content": { "application/json": {
-      "schema": { "$ref": "#/components/schemas/Task" } } },
+      "schema": { "$ref": "#/components/schemas/TaskRequest" } } },
     "required": true
   },
   "responses": { "201": { "description": "Created", "content": { "...": {} } } }
@@ -214,50 +214,74 @@ Exemple réel, extrait de `POST /api/boards/{boardId}/tasks` dans `/v3/api-docs`
 | `tags: ["task-controller"]` | Nom de la classe `TaskController` (springdoc le « dé-camelise ») |
 | `operationId: "createTask"` | Nom de la méthode Java |
 | `parameters[0].name = boardId` | `@PathVariable("boardId")` |
-| `requestBody.required = true` | `@RequestBody Task` |
-| `$ref: .../Task` | Le type du paramètre, résolu en schéma |
+| `requestBody.required = true` | `@Valid @RequestBody TaskRequest` |
+| `$ref: .../TaskRequest` | Le **type du DTO** en paramètre, résolu en schéma (et non l'entité JPA) |
 | `responses: {"201": ...}` | `@ResponseStatus(HttpStatus.CREATED)` (voir A.6) |
 
-### Le schéma `Task` réellement généré
+### Les schémas `TaskRequest` / `TaskResponse` réellement générés
+
+Depuis la couche DTO (**B.9**), une opération n'a plus *un* schéma mais **deux** :
+celui du corps accepté en entrée et celui du corps renvoyé. springdoc ne voit
+que les types présents dans la **signature du contrôleur** — c'est le reflet
+exact de `TaskMapper`.
 
 ```json
+// requestBody de POST /api/boards/{boardId}/tasks
+// -> components.schemas.TaskRequest
+{
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title":       { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 0, "maxLength": 1000 }
+  }
+}
+
+// réponse 201 -> components.schemas.TaskResponse
 {
   "type": "object",
   "properties": {
-    "id":          { "type": "integer", "format": "int64" },
-    "title":       { "type": "string", "minLength": 1 },
-    "description": { "type": "string", "maxLength": 1000, "minLength": 0 },
-    "status":      { "type": "string", "enum": ["A_FAIRE", "EN_COURS", "TERMINE"] },
+    "id":          { "type": "integer", "format": "int64", "readOnly": true },
+    "title":       { "type": "string" },
+    "description": { "type": "string" },
+    "status":      { "type": "string", "enum": ["A_FAIRE","EN_COURS","TERMINE"] },
     "boardId":     { "type": "integer", "format": "int64", "readOnly": true }
-  },
-  "required": ["title"]
+  }
 }
 ```
 
+Le découplage rend les règles **visibles dans la documentation** : `status`
+n'existe **pas** dans `TaskRequest` (RG5 impose `A_FAIRE` à la création) mais
+existe dans `TaskResponse` et `TaskUpdateRequest` ; `id` et `boardId` sont
+`readOnly` (en sortie seulement). Et `components.schemas` ne contient **aucune**
+entité `Task`, `Board` ou `User` : exactement 10 schémas, tous des DTO.
+
 **Tableau à retenir — annotation Java → conséquence dans Swagger :**
 
-| Annotation (sur `Task`) | Effet dans le schéma OpenAPI |
+| Annotation (sur un DTO) | Effet dans le schéma OpenAPI |
 |-------------------------|------------------------------|
-| `@NotBlank private String title` | `required: ["title"]` + `minLength: 1` |
-| `@Size(max = 1000) private String description` | `maxLength: 1000` |
-| `private TaskStatus status` (enum) | `enum: ["A_FAIRE","EN_COURS","TERMINE"]` |
-| `@Email private String email` (sur `User`) | `format: "email"` |
+| `@NotBlank` sur `TaskRequest.title` | `required: ["title"]` + `minLength: 1` |
+| `@Size(max = 1000)` sur `TaskRequest.description` | `maxLength: 1000` |
+| `@Size(min = 1)` sur `TaskUpdateRequest.title` | `minLength: 1` mais **pas** `required` (champ optionnel) |
+| `TaskStatus` (enum) | `enum: ["A_FAIRE","EN_COURS","TERMINE"]` |
+| `@Email` sur `UserRequest.email` | `format: "email"` |
 | `@NotNull` sur `StatusUpdateRequest.status` | `required: ["status"]` |
-| `@JsonIgnore` sur `board`, `tasks`, `owner`, `boards` | Ces propriétés **n'apparaissent pas** |
-| `@JsonProperty(access = READ_ONLY)` | `readOnly: true` |
-| `LocalDateTime createdAt` | `{"type":"string","format":"date-time"}` |
+| `@Schema(accessMode = READ_ONLY)` | `readOnly: true` |
+| `@Schema(format = "date-time")` + `LocalDateTime` | `format: date-time` |
+| `@JsonIgnoreProperties(ignoreUnknown = true)` | Aucun effet sur le schéma : tolérance à la *désérialisation* |
 | `@Column`, `@Entity`, `@JoinColumn` (JPA) | **Aucun effet** sur OpenAPI |
 
-👉 Deux mondes bien séparés : **JPA** décrit la base, **Jackson + Bean Validation**
-décrivent le JSON. Swagger se construit sur le second.
+👉 Trois mondes séparés : **JPA** décrit la base, **DTO + Bean Validation**
+décrivent le contrat public, **Mapper** fait la jonction. Swagger ne se
+construit que sur le deuxième.
 
 Deux détails observés :
 
-- `TaskStatus` n'apparaît **pas** comme schéma nommé : springdoc « inline » les enums
-  par défaut (on peut le changer avec `@Schema`).
-- `User` génère `required: ["email","firstName","lastName"]` uniquement grâce aux
-  `@NotBlank` — la validation et la documentation sont **la même information**, pas deux
-  choses à maintenir.
+- `TaskStatus` n'apparaît **pas** comme schéma nommé : springdoc « inline » les
+  enums par défaut (on peut le changer avec `@Schema`).
+- `UserRequest` génère `required: ["email","firstName","lastName"]` grâce aux
+  `@NotBlank`, alors que `UserUpdateRequest` n'a **aucun** `required` : la
+  validation et la documentation sont la même information, mais **par opération**.
 
 ## A.6 Le piège du `201` documenté comme `200` (et sa correction)
 
@@ -277,8 +301,8 @@ Correctif appliqué sur les trois POST :
 ```java
 @PostMapping
 @ResponseStatus(HttpStatus.CREATED)     // métadonnée visible par springdoc
-public ResponseEntity<Task> createTask(...) {
-    return ResponseEntity.status(HttpStatus.CREATED).body(created);
+public ResponseEntity<TaskResponse> createTask(...) {
+    return ResponseEntity.status(HttpStatus.CREATED).body(TaskMapper.toResponse(created));
 }
 ```
 
@@ -319,9 +343,9 @@ public class TaskController {
         @ApiResponse(responseCode = "400", description = "Titre manquant")
     })
     @PostMapping
-    public ResponseEntity<Task> createTask(
+    public ResponseEntity<TaskResponse> createTask(
             @Parameter(description = "Identifiant du tableau") @PathVariable("boardId") Long boardId,
-            @Valid @RequestBody Task task) { ... }
+            @Valid @RequestBody TaskRequest request) { ... }
 }
 ```
 
@@ -516,8 +540,16 @@ public Long getOwnerId() { ... }
 plus `spring.jpa.open-in-view=false` (on ne garde **pas** une session ouverte pendant la
 sérialisation) et `@JsonIgnoreProperties({"hibernateLazyInitializer","handler"})` sur les entités.
 
-👉 Ces mêmes annotations produisent `readOnly: true` et l'absence de champs dans Swagger
-(voir A.5) : **un seul endroit, deux effets cohérents**.
+👉 À l'époque de cette correction, ces mêmes annotations produisaient aussi
+`readOnly: true` et l'absence de champs dans Swagger : **un seul endroit, deux
+effets cohérents**.
+
+**Depuis B.9, les entités ne sont plus jamais sérialisées** : ce sont les DTO de
+réponse qui portent le contrat, et `@Schema(accessMode = READ_ONLY)` qui produit
+`readOnly: true`. Les annotations Jackson ci-dessus restent sur les entités comme
+**filet de sécurité** (si un jour une entité était renvoyée par erreur), mais
+elles ne définissent plus l'API. C'est un bon exemple de « dette technique
+rendue inoffensive puis explicitement redocumentée ».
 
 ### 6) Validation
 
@@ -598,10 +630,15 @@ curl -s http://localhost:8080/api/users/abc
 | `UserServiceTest`, `BoardServiceTest`, `TaskServiceTest` | JUnit 5 + Mockito (`@Mock`, `@InjectMocks`) | Les **règles métier** : email unique, statut forcé `A_FAIRE`, mise à jour partielle, rattachement au tableau |
 | `BoardApiIntegrationTest` | `@SpringBootTest(RANDOM_PORT)` + `TestRestTemplate` | Le **système entier** : Tomcat, H2, JSON, codes HTTP, `/docs`, `/v3/api-docs`, cascades de suppression |
 | `BoardApplicationTests` | `@SpringBootTest` | Le contexte Spring démarre (détecte les erreurs de requêtes dérivées !) |
+| `DtoBoundaryTest` (7 tests) | JUnit 5 + Jackson seul, **sans Spring** | La frontière DTO : *mass assignment* refusé, champs serveur ignorés, aucune relation JPA dans les réponses, PUT partiel |
 
 ```bash
-./mvnw clean verify     # 16 tests, tous verts
+./mvnw clean verify     # 23 tests, tous verts
 ```
+
+`BoardApiIntegrationTest` vérifie en plus que `/v3/api-docs` contient les
+schémas `UserRequest`, `BoardResponse`, `TaskResponse`… et **plus** `User`,
+`Board` ou `Task` : la documentation elle-même atteste le découplage.
 
 Les deux classes `@SpringBootTest` imposent H2 via `TestEnvironment` : voir
 **B.6** pour l'incident PostgreSQL et l'ordre de priorité des propriétés.
@@ -615,6 +652,7 @@ Les deux classes `@SpringBootTest` imposent H2 via `TestEnvironment` : voir
 | Erreur de syntaxe en fin de `TaskService` | Bloc `package` dupliqué | Toujours lire le fichier jusqu'à la dernière ligne |
 | `cannot find symbol getTitle()` | Lombok non exécuté (JDK 23+) | Déclarer l'annotation processor |
 | `release version 25 not supported` | `--release` > version du JDK qui compile | Cibler le minimum compatible (17), `-Djava.version` pour surcharger |
+| `/v3/api-docs` décrit `Task` (entité JPA) | Contrôleurs branchés directement sur les entités | DTO en entrée/sortie + mapper (B.9) : le contrat devient un choix explicite |
 | 400 « parameter name not available » | Compilation sans `-parameters` | Nommer explicitement les paramètres |
 | `Could not resolve attribute 'ownerId'` | Getter calculé vu comme propriété JPA | L'introspection a des effets de bord |
 | 500 sur une URL inconnue | `@ExceptionHandler(Exception.class)` | Respecter `ErrorResponse` |
@@ -636,14 +674,27 @@ Les sources sont compilées au niveau **17** (`-17`), ce qui prouve qu'elles ne
 dépendent d'aucune API apparue après Java 17 : c'est ce qui permet de baisser la
 cible du `pom.xml` sans risque (voir **B.7**).
 
-Résultats : **0 erreur de compilation** sur 25 fichiers, **16/16 tests verts**,
-`POST` → 201, `/docs` → 302, `/v3/api-docs` → 200 (OpenAPI 3.1.0), URL inconnue → 404,
-mauvais id → 400. Chez vous, `./mvnw clean verify` rejoue tout ça nativement.
+Résultats actuels : **0 erreur de compilation** sur 38 fichiers, **23/23 tests verts**,
+`POST` → 201, `/docs` → 302, `/v3/api-docs` → 200 (OpenAPI 3.1.0 avec 10 schémas
+DTO et aucune entité), URL inconnue → 404, mauvais id → 400. Chez vous,
+`./mvnw clean verify` rejoue tout ça nativement.
+
+Pour B.9, l'application a aussi été démarrée sur un vrai port : un `POST` avec
+`{"id":999,…}` renvoie bien `{"id":1,…}`, `createdAt` et `status` fournis par le
+client sont ignorés, et `components.schemas` contient exactement
+`UserRequest`, `UserUpdateRequest`, `UserResponse`, `BoardRequest`,
+`BoardUpdateRequest`, `BoardResponse`, `TaskRequest`, `TaskUpdateRequest`,
+`TaskResponse`, `StatusUpdateRequest`.
 
 Pour B.8, trois contrôles supplémentaires ont été faits avec le profil `postgres`
-actif et quatre variables PostgreSQL : les tests restent à **16/16 sur H2** ;
+actif et quatre variables PostgreSQL : les tests restent à **23/23 sur H2** ;
 l'application utilise bien `org.postgresql.Driver` ; et forcer le driver H2 avec
 une URL PostgreSQL reproduit « claims to not accept jdbcUrl ».
+
+> **Note de lecture** : B.6, B.7 et B.8 racontent des incidents survenus quand la
+> suite comptait **16 tests**. Les chiffres « 16 » cités dans ces sections sont
+> des citations de logs de l'époque, pas une erreur : la suite en compte 23 depuis
+> l'ajout de `DtoBoundaryTest` (B.9).
 
 ## B.6 Incident « PostgreSQL au lieu de H2 » : qui décide de la config ?
 
@@ -1026,9 +1077,9 @@ utilisé **volontairement** pour configurer l'application.
 | `./mvnw clean verify`, **même avec** `SPRING_DATASOURCE_URL=jdbc:postgresql://…` | **H2** 🔒 | `TestEnvironment` injecte H2 au **rang 1** (`@SpringBootTest(properties=…)`), qui écrase tout |
 
 Donc : vous pouvez installer, démarrer et configurer PostgreSQL sur votre poste
-**sans plus jamais casser les 16 tests** — c'est précisément la garantie ajoutée
-en `e2c96a1`, et je l'ai revérifiée avec le profil `postgres` **actif** pendant
-les tests (16/16, journal H2). Mais `clean verify` ne *validera* pas PostgreSQL :
+**sans plus jamais casser la suite de tests** — c'est précisément la garantie
+ajoutée en `e2c96a1`, et je l'ai revérifiée avec le profil `postgres` **actif**
+pendant les tests (23/23, journal H2). Mais `clean verify` ne *validera* pas PostgreSQL :
 il ne fait que confirmer que le code fonctionne sur H2. Pour valider PostgreSQL,
 il faut **démarrer l'application et appeler l'API**.
 
@@ -1155,6 +1206,154 @@ Savoir lequel des deux on est en train d'écrire évite 90 % des « chez moi ça
 marche ». C'est aussi pour cela que le correctif n'a pas consisté à « interdire
 PostgreSQL » : il a consisté à **placer chaque choix au bon niveau de priorité**.
 
+## B.9 « Le DTO n'est pas implémenté partout » : compléter la couche DTO
+
+### 1) Le constat de départ
+
+Il n'existait qu'**un seul** DTO : `StatusUpdateRequest`, créé uniquement parce
+que `PATCH .../status` avait besoin d'un corps contenant *seul* `status`. Les
+trois contrôleurs, eux, faisaient ceci :
+
+```java
+public ResponseEntity<Task> createTask(@Valid @RequestBody Task task) { ... }
+```
+
+Autrement dit : **l'entité JPA était le contrat HTTP**. Un objet conçu pour
+Hibernate (`@Entity`, `@ManyToOne(LAZY)`, `@PrePersist`, cascade, proxies)
+servait aussi à lire du JSON entrant et à écrire du JSON sortant.
+
+### 2) Pourquoi c'est un problème (5 raisons concrètes)
+
+| Risque | Mécanisme |
+|--------|-----------|
+| **Mass assignment** | `@RequestBody User` possède un setter `setId()`. Un client envoie `{"id":999,…}` : Jackson le renseigne avant que le service ne le remette à `null`. Ici le service s'en protégeait, mais la *frontière* laissait passer la donnée. |
+| **Fuite du modèle de données** | Ajouter `private String internalNote;` à `User` crée une colonne **et** un champ JSON public, sans qu'on l'ait décidé. |
+| **Proxies et récursion** | Sérialiser `owner` (LAZY) déclenche `hibernateLazyInitializer`, voire une boucle `User → boards → owner → …`. D'où `@JsonIgnore`, `@JsonIgnoreProperties` et les getters calculés `getOwnerId()`. |
+| **Validation mélangée** | `@NotBlank` et `@Email` sont posés sur l'entité : ils servent à la fois à la persistance et à l'API. Impossible d'avoir des règles différentes pour POST et PUT. |
+| **Évolution impossible** | Renommer une colonne, changer une relation ou paginer une réponse casse les clients, parce que le JSON est calqué sur la base. |
+
+Le README §6 appelait ça une « piste d'amélioration ». C'est maintenant fait.
+
+### 3) L'inventaire : 10 DTO, 3 familles
+
+| Famille | Rôle | User | Board | Task |
+|---------|------|------|-------|------|
+| **Request** | corps de POST : champs autorisés + `@NotBlank` / `@Email` / `@Size` | `UserRequest` | `BoardRequest` | `TaskRequest` |
+| **UpdateRequest** | corps de PUT : **tous optionnels**, champs absents = « ne pas modifier » | `UserUpdateRequest` | `BoardUpdateRequest` | `TaskUpdateRequest` |
+| **Response** | corps renvoyé : champs lisibles, `readOnly`, **aucune relation** | `UserResponse` | `BoardResponse` | `TaskResponse` |
+
+S'ajoute `StatusUpdateRequest` (PATCH), soit **10 schémas** au total.
+
+Détail pédagogique important : `TaskRequest` **n'a pas de `status`**. La règle
+RG5 impose `A_FAIRE` à la création ; plutôt que d'accepter un champ qu'on ignore
+ensuite, on ne le documente pas du tout. `TaskUpdateRequest.status`, lui, existe
+bien : le statut est modifiable après création. Même ressource, **deux contrats
+différents selon l'opération** — impossible à exprimer avec une seule entité.
+
+Autre détail : `@NotBlank` interdit `null` **et** `""`, donc il ne convient pas à
+un PUT partiel où l'absence est normale. On utilise `@Size(min = 1)` : `null`
+passe (pas de modification), `""` est refusé. C'est un exemple concret de
+« la validation appartient à l'opération, pas à l'objet ».
+
+### 4) Où se fait la traduction, et pourquoi les services n'ont pas bougé
+
+```
+JSON  →  [ Jackson ]  →  XxxRequest  →  [ XxxMapper ]  →  Entité JPA
+                                                            ↓
+                                                      Service (règles métier)
+                                                            ↓
+JSON  ←  [ Jackson ]  ←  XxxResponse ←  [ XxxMapper ]  ←  Entité JPA
+```
+
+`mapper/UserMapper`, `BoardMapper`, `TaskMapper` sont des classes `final` avec
+des méthodes `static` écrites **champ par champ** :
+
+```java
+public static User toEntity(UserRequest request) {
+    User user = new User();
+    user.setFirstName(request.getFirstName());
+    user.setLastName(request.getLastName());
+    user.setEmail(request.getEmail());
+    // id et boards ne sont PAS copiés : le serveur en est seul propriétaire.
+    return user;
+}
+```
+
+Les **services restent inchangés** et manipulent des entités : ce sont eux qui
+portent l'unicité de l'email, le statut forcé, les cascades, les transactions.
+Les 14 tests Mockito n'ont donc pas eu à être réécrits — bon signe : un
+changement de contrat HTTP ne devrait jamais toucher aux règles métier.
+
+Pourquoi ne pas utiliser MapStruct ou Spring `Converter` ? Parce qu'ici on veut
+**voir** la décision de sécurité (« je ne copie pas l'id »). Une fois le
+principe compris, MapStruct génère ce code et fait gagner du temps sur un gros
+projet — mais il copiera tout ce qui porte le même nom, y compris un `id` si on
+n'y prend pas garde.
+
+### 5) Mass assignment : l'expérience à faire
+
+```bash
+curl.exe -i -X POST http://localhost:8080/api/users \
+  -H 'Content-Type: application/json' \
+  -d '{"id":999,"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com","boards":[{"id":1}]}'
+# 201  {"id":1,"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com"}
+```
+
+`id=999` a disparu, `boards` aussi. Deux protections **indépendantes** :
+
+1. `UserRequest` n'a pas ces champs + `@JsonIgnoreProperties(ignoreUnknown = true)`
+   → Jackson les ignore à la désérialisation ;
+2. `UserService.createUser` fait quand même `user.setId(null)` → défense en
+   profondeur si quelqu'un contourne la couche HTTP (batch, appel interne…).
+
+Même principe pour `BoardRequest` (`id`, `createdAt`, `ownerId`, `tasks`
+ignorés) et `TaskRequest` (`id`, `boardId`, `status` ignorés).
+
+### 6) Effet immédiat sur Swagger (vérifié)
+
+`/v3/api-docs` contient désormais **exactement** :
+
+```text
+BoardRequest  BoardResponse  BoardUpdateRequest  StatusUpdateRequest
+TaskRequest   TaskResponse   TaskUpdateRequest
+UserRequest   UserResponse   UserUpdateRequest
+```
+
+et **plus aucun** `User`, `Board`, `Task`. Les POST annoncent toujours `201`,
+`readOnly: true` est revenu sur `id` / `createdAt` / `ownerId` / `boardId`
+grâce à `@Schema(accessMode = READ_ONLY)`, et `TaskResponse.status` porte
+l'enum. `BoardApiIntegrationTest` et `DtoBoundaryTest` verrouillent tout ça.
+
+Petit détail de classpath : `@Schema` vient de
+`io.swagger.core.v3:swagger-annotations-jakarta`, fourni en **transitif
+`compile`** par springdoc. Aucune dépendance à ajouter au `pom.xml` — mais
+c'est bien un import de code, donc si vous supprimiez springdoc, la compilation
+casserait (même logique que l'anecdote de A.2).
+
+### 7) Ce qui n'a PAS changé (choix de non-régression)
+
+- **Le JSON échangé est identique** : mêmes noms de champs, mêmes codes HTTP,
+  mêmes erreurs. Un client existant ne voit aucune différence.
+- **Les URL et les verbes** sont inchangés.
+- **Les services et les 14 tests Mockito** sont inchangés.
+- **Les annotations Jackson sur les entités** (`@JsonIgnore`,
+  `@JsonProperty(READ_ONLY)`, `@JsonIgnoreProperties`) sont conservées : elles
+  ne définissent plus le contrat mais restent un filet de sécurité si une entité
+  était sérialisée par accident. Les getters `getOwnerId()` / `getBoardId()`
+  servent maintenant aux mappers — ils n'ont jamais été perdus.
+
+> C'est une règle générale : **on ne change pas un contrat public en même temps
+> qu'on change l'implémentation**. D'abord découpler à comportement constant,
+> puis faire évoluer le contrat volontairement, avec une version d'API.
+
+### 8) Ce qu'il reste à apprendre
+
+MapStruct / records immuables pour les Response, DTO de pagination (`Page<T>`),
+`@Schema` avec exemples, validation par groupes, et surtout : des DTO
+d'authentification dès qu'on ajoute Spring Security. Un DTO n'est pas
+« une copie de l'entité » : c'est **le vocabulaire d'une conversation précise**
+entre un client et une opération.
+
 ---
 
 # Partie C — Exercices pour apprendre en modifiant
@@ -1167,9 +1366,11 @@ PostgreSQL » : il a consisté à **placer chaque choix au bon niveau de priorit
    redémarrer, puis `curl -i /documentation` (302) et `curl -i /docs` (404).
 3. **Enrichir une opération.** Ajouter `@Operation(summary = "…")` sur `createTask` et
    `@Tag` sur la classe. Vérifier `tags`, `summary` et `operationId` dans le JSON.
-4. **Validation ↔ documentation.** Ajouter `@Size(max = 40)` sur `Board.title`.
-   Observer `maxLength: 40` dans le schéma **et** un 400 si on envoie un titre plus long.
-   Une seule annotation, deux effets.
+4. **Validation ↔ documentation.** Ajouter `@Size(max = 40)` sur
+   `BoardRequest.title` (le DTO d'entrée, plus l'entité). Observer
+   `maxLength: 40` dans `components.schemas.BoardRequest` **et** un 400 si on
+   envoie un titre plus long. Une seule annotation, deux effets — et remarquez
+   que `BoardResponse` ne change pas : c'est bien le DTO d'entrée qui fait loi.
 5. **Documenter les erreurs.** Ajouter
    `@ApiResponse(responseCode = "404", description = "Tableau introuvable")` sur `createTask`
    et vérifier que la réponse 404 apparaît dans le JSON.
@@ -1182,14 +1383,17 @@ PostgreSQL » : il a consisté à **placer chaque choix au bon niveau de priorit
 8. **Provoquer tous les codes.** Avec `curl`, obtenir 400 (email invalide), 404
    (`/api/users/999999`), 405 (`DELETE /api/users`), 409 (email en doublon), 201, 204.
    Lire le corps `ApiError` et retrouver le handler correspondant dans `GlobalExceptionHandler`.
-9. **Ajouter un champ.** Ajouter `private Integer priority;` à `Task`. Observer **deux**
-   conséquences : une nouvelle colonne dans le DDL H2 au démarrage **et** une nouvelle
-   propriété dans `components.schemas.Task`. C'est la démonstration la plus parlante du
-   lien entre JPA, Jackson et Swagger.
+9. **Ajouter un champ — et découvrir le découplage.** Ajouter
+   `private Integer priority;` à l'entité `Task` seule. Observer qu'une nouvelle
+   colonne apparaît dans le DDL H2… mais **rien** dans `/v3/api-docs` ni dans
+   les réponses JSON. C'est exactement le bénéfice de B.9 : la base a évolué
+   **sans modifier le contrat public**. Ajouter ensuite le champ à
+   `TaskResponse` (et à `TaskRequest` si le client doit le fournir) + le mapper :
+   cette fois la documentation change, parce que *vous* l'avez décidé.
 10. **Reproduire l'incident B.6, puis l'empêcher.** Définir
     `SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:1/board`,
     `SPRING_DATASOURCE_USERNAME=postgres`, `SPRING_DATASOURCE_PASSWORD=faux`, puis lancer
-    `./mvnw clean verify` : **16/16 doivent rester verts** et le journal doit afficher
+    `./mvnw clean verify` : **23/23 doivent rester verts** et le journal doit afficher
     `jdbc:h2:mem:boarddb`. Ensuite, retirer une seule ligne de `TestEnvironment`
     (par exemple `DATASOURCE_PASSWORD`) et relancer : selon votre machine, le contexte
     peut échouer — vous venez de mesurer concrètement l'ordre de priorité du tableau B.6.
@@ -1209,17 +1413,27 @@ PostgreSQL » : il a consisté à **placer chaque choix au bon niveau de priorit
     `./mvnw spring-boot:run`, puis `psql -d board -c "\dt"` et un `POST /api/users`.
     Observer le DDL PostgreSQL dans le journal (`create table users …`) et la ligne qui
     survit à un redémarrage. Ensuite, **sans rien désactiver**, lancer
-    `./mvnw clean verify` : 16/16 verts, et le journal des tests affiche
+    `./mvnw clean verify` : 23/23 verts, et le journal des tests affiche
     `jdbc:h2:mem:boarddb`. Pour finir, remettre volontairement
     `SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.h2.Driver` et relancer l'application :
     l'erreur « claims to not accept jdbcUrl » réapparaît. Vous venez de toucher
     du doigt les rangs 1, 6 et 9 du tableau B.6.
+13. **Attaquer la frontière DTO.** Envoyer
+    `POST /api/users` avec `{"id":999,"boards":[{"id":1}],"firstName":"Ada",…}` :
+    l'`id` renvoyé doit être `1`, pas `999`, et la réponse ne contient aucun
+    `boards`. Faire la même chose avec `createdAt` sur `POST /api/boards` et
+    `status":"TERMINE"` sur `POST .../tasks` : les trois valeurs sont ignorées.
+    Puis lire `$api.components.schemas.PSObject.Properties.Name` dans
+    `/v3/api-docs` et constater les **10** schémas DTO, sans `User`, `Board`
+    ni `Task`. Enfin, ouvrir `TaskRequest` et `TaskUpdateRequest` et expliquer
+    pourquoi l'un n'a pas de `status` et l'autre si.
 
 ---
 
 # Pour aller plus loin
 
-- Remplacer l'exposition directe des entités par des **DTO** (contrat HTTP indépendant de la base).
+- Aller plus loin avec les **DTO** déjà en place (B.9) : MapStruct, records
+  immuables pour les Response, DTO de pagination, validation par groupes.
 - `@OpenAPIDefinition`, `@SecurityScheme` + Spring Security (JWT bearer), groupes springdoc.
 - Exporter le contrat : `curl -s localhost:8080/v3/api-docs > openapi.json`, puis générer un
   client avec OpenAPI Generator.
@@ -1250,3 +1464,6 @@ PostgreSQL » : il a consisté à **placer chaque choix au bon niveau de priorit
 | **`major version` d'un `.class`** | Numéro de version du bytecode : 61 = Java 17, 65 = Java 21, 69 = Java 25 |
 | **Profil Spring** | Variante de configuration activée par `SPRING_PROFILES_ACTIVE`, chargée depuis `application-{profil}.properties` |
 | **Test opt-in** | Test désactivé par défaut, activé par une variable : permet d'exiger une dépendance externe sans casser le build standard |
+| **Mass assignment** | Un client envoie un champ qu'il ne devrait pas contrôler (`id`, `ownerId`…) et l'application le recopie tel quel |
+| **Mapper** | Code explicite qui traduit DTO ↔ entité à la frontière HTTP, champ par champ |
+| **Requête / Mise à jour / Réponse** | Trois DTO distincts par ressource : contraintes différentes selon l'opération |

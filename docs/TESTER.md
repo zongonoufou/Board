@@ -12,7 +12,7 @@
 
 | Niveau | Durée | Ce que ça prouve | Prérequis |
 |--------|-------|------------------|-----------|
-| **1. Tests automatiques** | ~1 min | Compilation, 16 tests, contexte Spring, API HTTP | JDK 17+ |
+| **1. Tests automatiques** | ~1 min | Compilation, 23 tests, contexte Spring, API HTTP | JDK 17+ |
 | **2. Application sur H2** | ~5 min | Swagger, endpoints, codes d'erreur, données en mémoire | — |
 | **3. Application sur PostgreSQL** | ~10 min | Driver PG, schéma réel, **persistance après redémarrage** | PostgreSQL démarré |
 
@@ -45,13 +45,14 @@ pas ici. En Git Bash : `./mvnw -version`.
 **Ce que vous devez voir** (et rien d'autre) :
 
 ```text
-[INFO] Tests run: 16, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 23, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
-Les rapports détaillés sont dans `target\surefire-reports\` (un `.txt` par classe).
-Les 14 tests Mockito vérifient les règles métier ; les 2 tests `@SpringBootTest`
-démarrent un vrai contexte Spring + Tomcat + H2 et appellent l'API.
+Les rapports détaillés sont dans `target\surefire-reports\` (un `.txt` par classe) :
+**14** tests Mockito (règles métier) + **2** tests `@SpringBootTest` (contexte
+Spring + Tomcat + H2, appels HTTP, schémas OpenAPI) + **7** tests
+`DtoBoundaryTest` (frontière DTO, sans Spring, très rapides) = **23**.
 
 ### Variante pédagogique : prouver que les tests sont hermétiques
 
@@ -62,7 +63,7 @@ $env:SPRING_PROFILES_ACTIVE = "postgres"
 $env:SPRING_DATASOURCE_URL = "jdbc:postgresql://127.0.0.1:1/board"
 $env:SPRING_DATASOURCE_USERNAME = "postgres"
 $env:SPRING_DATASOURCE_PASSWORD = "faux"
-.\mvnw.cmd clean verify          # toujours 16 / 16
+.\mvnw.cmd clean verify          # toujours 23 / 23
 
 Remove-Item Env:SPRING_PROFILES_ACTIVE
 Remove-Item Env:SPRING_DATASOURCE_URL
@@ -95,8 +96,14 @@ $api = Invoke-RestMethod http://localhost:8080/v3/api-docs
 $api.openapi                                                  # 3.1.0
 $api.paths.PSObject.Properties.Name                            # les 7 chemins
 $api.paths.'/api/users'.post.responses.PSObject.Properties.Name  # doit contenir 201
-$api.components.schemas.Task.properties.status.PSObject.Properties['enum'].Value  # A_FAIRE, EN_COURS, TERMINE
+$api.components.schemas.TaskResponse.properties.status.PSObject.Properties['enum'].Value  # A_FAIRE, EN_COURS, TERMINE
+$api.components.schemas.PSObject.Properties.Name   # 10 schémas DTO, aucun schéma User / Board / Task
 ```
+
+Les schémas attendus : `UserRequest`, `UserUpdateRequest`, `UserResponse`,
+`BoardRequest`, `BoardUpdateRequest`, `BoardResponse`, `TaskRequest`,
+`TaskUpdateRequest`, `TaskResponse`, `StatusUpdateRequest`. C'est la preuve que
+le contrat HTTP est découplé des entités JPA (guide **B.9**).
 
 - `/docs` → **302** vers `/swagger-ui/index.html` (ouvrez aussi l'URL dans le navigateur).
 - `/v3/api-docs` → JSON **OpenAPI 3.1.0**, 7 chemins. Vérifiez que les `POST`
@@ -170,6 +177,30 @@ Arrêtez l'application (`Ctrl+C`) et relancez-la : `GET /api/users` renvoie `[]`
 H2 est **en mémoire** : tout disparaît. C'est pratique pour les tests, mais
 c'est précisément ce que le niveau 3 va changer.
 
+### 2.6 Vérifier la couche DTO (guide B.9)
+
+Les contrôleurs n'exposent plus les entités JPA. Deux contrôles rapides :
+
+```powershell
+# 1) Mass assignment : id et relations fournis par le client doivent etre ignores
+curl.exe -i -X POST 'http://localhost:8080/api/users' `
+  -H 'Content-Type: application/json' `
+  -d '{"id":999,"boards":[{"id":1}],"firstName":"Ada","lastName":"Lovelace","email":"ada2@example.com"}'
+# -> 201, {"id":1,...} : ni 999, ni "boards"
+
+# 2) Champs imposes par le serveur
+curl.exe -s -X POST 'http://localhost:8080/api/boards?ownerId=1' `
+  -H 'Content-Type: application/json' `
+  -d '{"title":"Projet","createdAt":"2000-01-01T00:00:00","ownerId":42}'
+# -> createdAt = date actuelle, ownerId = 1
+curl.exe -s -X POST 'http://localhost:8080/api/boards/1/tasks' `
+  -H 'Content-Type: application/json' -d '{"title":"Tache","status":"TERMINE"}'
+# -> status = A_FAIRE (regle RG5), le statut envoye est ignore
+```
+
+Les 7 tests `DtoBoundaryTest` verrouillent ces comportements sans démarrer
+Spring. Pour voir *pourquoi*, lire la section **B.9** du guide.
+
 ---
 
 ## Niveau 3 — Tester avec PostgreSQL
@@ -231,7 +262,7 @@ conserve. **Voilà ce que « tester avec PostgreSQL » apporte réellement.**
 Sans rien désactiver, dans un autre terminal :
 
 ```powershell
-.\mvnw.cmd clean verify     # 16 / 16, et le journal des tests dit jdbc:h2:mem:boarddb
+.\mvnw.cmd clean verify     # 23 / 23, et le journal des tests dit jdbc:h2:mem:boarddb
 ```
 
 ### 3.6 Revenir à H2
@@ -250,9 +281,11 @@ Git Bash équivalent : `unset SPRING_PROFILES_ACTIVE SPRING_DATASOURCE_URL …`.
 ## ✅ Checklist finale
 
 - [ ] `java -version` ≥ 17, `.\mvnw.cmd -version` affiche un JDK
-- [ ] `.\mvnw.cmd clean verify` → `BUILD SUCCESS`, 16 tests
+- [ ] `.\mvnw.cmd clean verify` → `BUILD SUCCESS`, 23 tests
 - [ ] `/docs` → 302, `/v3/api-docs` → JSON OpenAPI 3.1.0 avec `201` sur les POST
+      et **10 schémas DTO** (aucune entité `User`/`Board`/`Task`)
 - [ ] POST user / board / task → 201 ; `A_FAIRE` imposé ; `PATCH` → `EN_COURS`
+- [ ] `id`/`createdAt`/`status` envoyés par le client sont ignorés (§2.6)
 - [ ] 404 / 400 / 405 / 409 / 400 sur les cas d'erreur
 - [ ] Niveau 3 : `\dt` liste `users`, `boards`, `tasks`, et la donnée survit au redémarrage
 - [ ] Tests toujours verts avec le profil `postgres` actif
@@ -279,9 +312,11 @@ Git Bash équivalent : `unset SPRING_PROFILES_ACTIVE SPRING_DATASOURCE_URL …`.
 Chaque étape ici correspond à un mécanisme expliqué dans
 [`APPRENDRE.md`](APPRENDRE.md) :
 
-- **B.3 / B.5** : ce que vérifient réellement les 16 tests ;
+- **B.3 / B.5** : ce que vérifient réellement les 23 tests ;
 - **B.6** : pourquoi une variable d'environnement peut écraser `application.properties`, et pourquoi les tests y échappent ;
 - **B.7** : JDK qui exécute ≠ version cible du bytecode ;
 - **B.8** : le profil `postgres`, l'audit de compatibilité du schéma, et la différence entre *application* et *tests* ;
-- **Partie C** : 12 exercices, dont le n°10 (reproduire la panne PostgreSQL),
-  le n°11 (voir le bytecode changer de version) et le n°12 (basculer sur PostgreSQL).
+- **B.9** : la couche DTO, le *mass assignment*, et pourquoi Swagger décrit 10 DTO et aucune entité ;
+- **Partie C** : 13 exercices, dont le n°10 (reproduire la panne PostgreSQL),
+  le n°11 (voir le bytecode changer de version), le n°12 (basculer sur
+  PostgreSQL) et le n°13 (attaquer la frontière DTO).

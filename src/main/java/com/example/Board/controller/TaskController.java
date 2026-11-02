@@ -1,6 +1,10 @@
 package com.example.Board.controller;
 
 import com.example.Board.dto.StatusUpdateRequest;
+import com.example.Board.dto.TaskRequest;
+import com.example.Board.dto.TaskResponse;
+import com.example.Board.dto.TaskUpdateRequest;
+import com.example.Board.mapper.TaskMapper;
 import com.example.Board.model.Task;
 import com.example.Board.service.TaskService;
 import jakarta.validation.Valid;
@@ -44,35 +48,38 @@ public class TaskController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public ResponseEntity<Task> createTask(@PathVariable("boardId") Long boardId,
-                                           @Valid @RequestBody Task task) {
-        Task created = taskService.createTask(boardId, task);
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    public ResponseEntity<TaskResponse> createTask(@PathVariable("boardId") Long boardId,
+                                                   @Valid @RequestBody TaskRequest request) {
+        Task created = taskService.createTask(boardId, TaskMapper.toEntity(request));
+        return ResponseEntity.status(HttpStatus.CREATED).body(TaskMapper.toResponse(created));
     }
 
     @GetMapping
-    public ResponseEntity<List<Task>> getTasks(@PathVariable("boardId") Long boardId) {
-        return ResponseEntity.ok(taskService.getTasksByBoard(boardId));
+    public ResponseEntity<List<TaskResponse>> getTasks(@PathVariable("boardId") Long boardId) {
+        return ResponseEntity.ok(taskService.getTasksByBoard(boardId).stream()
+                .map(TaskMapper::toResponse).toList());
     }
 
     @GetMapping("/{taskId}")
-    public ResponseEntity<Task> getTaskById(@PathVariable("boardId") Long boardId,
-                                            @PathVariable("taskId") Long taskId) {
-        return ResponseEntity.ok(taskService.getTaskById(boardId, taskId));
+    public ResponseEntity<TaskResponse> getTaskById(@PathVariable("boardId") Long boardId,
+                                                    @PathVariable("taskId") Long taskId) {
+        return ResponseEntity.ok(TaskMapper.toResponse(taskService.getTaskById(boardId, taskId)));
     }
 
     @PutMapping("/{taskId}")
-    public ResponseEntity<Task> updateTask(@PathVariable("boardId") Long boardId,
-                                           @PathVariable("taskId") Long taskId,
-                                           @RequestBody Task task) {
-        return ResponseEntity.ok(taskService.updateTask(boardId, taskId, task));
+    public ResponseEntity<TaskResponse> updateTask(@PathVariable("boardId") Long boardId,
+                                                   @PathVariable("taskId") Long taskId,
+                                                   @Valid @RequestBody TaskUpdateRequest request) {
+        Task updated = taskService.updateTask(boardId, taskId, TaskMapper.toEntity(request));
+        return ResponseEntity.ok(TaskMapper.toResponse(updated));
     }
 
     @PatchMapping("/{taskId}/status")
-    public ResponseEntity<Task> changeTaskStatus(@PathVariable("boardId") Long boardId,
-                                                 @PathVariable("taskId") Long taskId,
-                                                 @Valid @RequestBody StatusUpdateRequest request) {
-        return ResponseEntity.ok(taskService.changeStatus(boardId, taskId, request.getStatus()));
+    public ResponseEntity<TaskResponse> changeTaskStatus(@PathVariable("boardId") Long boardId,
+                                                         @PathVariable("taskId") Long taskId,
+                                                         @Valid @RequestBody StatusUpdateRequest request) {
+        Task updated = taskService.changeStatus(boardId, taskId, request.getStatus());
+        return ResponseEntity.ok(TaskMapper.toResponse(updated));
     }
 
     @DeleteMapping("/{taskId}")
