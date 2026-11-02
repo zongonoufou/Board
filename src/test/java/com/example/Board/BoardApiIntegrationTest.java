@@ -20,7 +20,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * H2 en memoire et verifie les codes HTTP, la validation, les relations
  * et la serialisation JSON (pas de proxy Hibernate dans les reponses).
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                TestEnvironment.DATASOURCE_URL,
+                TestEnvironment.DATASOURCE_DRIVER,
+                TestEnvironment.DATASOURCE_USERNAME,
+                TestEnvironment.DATASOURCE_PASSWORD,
+                TestEnvironment.JPA_DDL_AUTO,
+                TestEnvironment.JPA_DIALECT,
+                TestEnvironment.JPA_OPEN_IN_VIEW,
+                TestEnvironment.SWAGGER_UI_PATH
+        })
 class BoardApiIntegrationTest {
 
     @Autowired

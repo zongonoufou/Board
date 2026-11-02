@@ -116,8 +116,44 @@ Spring MVC (`ErrorResponse`) : une URL inexistante renvoie bien **404**, pas 500
 
 Soit **16 tests**, tous verts (`./mvnw clean verify`).
 
+Les deux tests qui démarrent un contexte Spring (`BoardApplicationTests`,
+`BoardApiIntegrationTest`) imposent leurs propres propriétés via
+`TestEnvironment` et `@SpringBootTest(properties = ...)`. Ils utilisent donc
+**toujours H2 en mémoire**, même si la machine définit `SPRING_DATASOURCE_URL`
+ou un mot de passe PostgreSQL : les tests ne dépendent plus de l'environnement.
+
 ## 6. Piste d'amélioration
 
 Pour une API publique, remplacer l'exposition directe des entités JPA par des
 DTO de requête/réponse afin de découpler complètement le contrat HTTP du
 modèle de persistance.
+
+## 7. Dépannage : « password authentication failed for user "postgres" »
+
+Si `./mvnw clean verify` affiche 14 tests verts et **2 erreurs** sur les tests
+Spring, ce n'est ni Swagger ni Mockito : une configuration **externe** à votre
+machine a remplacé le H2 du projet par PostgreSQL. Vérifiez :
+
+```bash
+# Git Bash / terminal
+env | grep -iE 'spring|datasource|database|postgres|SPRING_APPLICATION_JSON'
+```
+
+```powershell
+# PowerShell
+Get-ChildItem Env: | Where-Object Name -match 'SPRING|DATASOURCE|POSTGRES'
+```
+
+Regardez aussi : un `application.properties` ou `application-*.properties` à
+côté du jar / dans le dossier courant, les options de la *Run Configuration*
+de l'IDE, et `SPRING_PROFILES_ACTIVE`. Pour un test ponctuel :
+
+```bash
+env -u SPRING_DATASOURCE_URL -u SPRING_DATASOURCE_USERNAME \
+    -u SPRING_DATASOURCE_PASSWORD -u SPRING_DATASOURCE_DRIVER_CLASS_NAME \
+    ./mvnw clean verify
+```
+
+L'explication complète (ordre de priorité des propriétés Spring Boot, pourquoi
+le rapport de conditions est inoffensif, comment le corriger) est dans la
+**section B.6** de [`docs/APPRENDRE.md`](docs/APPRENDRE.md).

@@ -600,6 +600,9 @@ curl -s http://localhost:8080/api/users/abc
 ./mvnw clean verify     # 16 tests, tous verts
 ```
 
+Les deux classes `@SpringBootTest` imposent H2 via `TestEnvironment` : voir
+**B.6** pour l'incident PostgreSQL et l'ordre de priorité des propriétés.
+
 ## B.4 Tableau récapitulatif : erreur → cause → leçon
 
 | Symptôme | Cause profonde | Leçon |
@@ -628,6 +631,225 @@ Pour ne pas livrer du code « qui a l'air juste », j'ai reconstruit en temporai
 Résultats : **0 erreur de compilation** sur 24 fichiers, **16/16 tests verts**,
 `POST` → 201, `/docs` → 302, `/v3/api-docs` → 200 (OpenAPI 3.1.0), URL inconnue → 404,
 mauvais id → 400. Chez vous, `./mvnw clean verify` rejoue tout ça nativement.
+
+## B.6 Incident « PostgreSQL au lieu de H2 » : qui décide de la config ?
+
+C'est un incident très formateur, arrivé sur **votre** machine après le premier
+`git pull`. Le code n'avait pas changé, mais les tests, si.
+
+### 1) Lire un rapport d'échec comme une enquête
+
+```text
+Tests run: 16, Failures: 0, Errors: 2
+  UserServiceTest          5/5  ✓
+  BoardServiceTest         4/4  ✓
+  TaskServiceTest          5/5  ✓
+  BoardApplicationTests::contextLoads                          ✗ ERREUR
+  BoardApiIntegrationTest::parcoursCompletEtGestionDesErreurs  ✗ ERREUR
+```
+
+**Indice n°1 : quels tests échouent ?** Exactement les deux annotés
+`@SpringBootTest`. Les 14 autres sont des tests Mockito : ils instancient un
+service à la main, sans contexte Spring, donc **sans `DataSource`**. Le dénominateur
+commun des deux erreurs est donc « démarrage du contexte » → base de données.
+
+**Indice n°2 : la chaîne de causes**, à lire de bas en haut (le dernier
+`Caused by` est la cause réelle) :
+
+```text
+BeanCreationException: entityManagerFactory
+  → PersistenceException: Unable to build Hibernate SessionFactory
+    → GenericJDBCException: Unable to open JDBC Connection for DDL execution
+      → PSQLException: FATAL: password authentication failed for user "postgres"
+```
+
+`entityManagerFactory` a besoin d'une connexion **au démarrage** parce que
+`spring.jpa.hibernate.ddl-auto=update` lui demande de créer/mettre à jour les
+tables. `ddl-auto` n'est pas la cause : c'est le déclencheur de la connexion.
+
+Les noms `HikariCP-6.3.3.jar` et `postgresql-42.7.7.jar` dans la trace ne sont
+pas des coupables non plus : le pool et le driver **obéissent** à l'URL et aux
+identifiants qu'on leur a donnés.
+
+### 2) Le très long `ConditionEvaluationReport` est du bruit
+
+Quand un contexte échoue, Spring Boot imprime son *Condition Evaluation Report* :
+des centaines de lignes « Positive matches / Negative matches / Unconditional
+classes ». C'est un **inventaire de ce qui a été essayé**, pas une liste d'erreurs.
+Les auto-configurations sont annotées `@ConditionalOnClass`,
+`@ConditionalOnMissingBean`, `@ConditionalOnProperty`… et **il est normal que la
+majorité ne s'appliquent pas**.
+
+Trois exemples pris dans votre log :
+
+| Ligne du rapport | Traduction |
+|------------------|------------|
+| `SwaggerConfig#springWebProvider` … *did not match* | `@ConditionalOnMissingBean` : le bean existait déjà. **Bonne nouvelle**, springdoc est actif. |
+| `SwaggerActuatorWelcomeConfiguration` … *did not match* | Spring Boot Actuator n'est pas dans le `pom.xml`. Normal. |
+| `SpringDocSpecPropertiesConfiguration` … *Unconditional classes* | springdoc a bien été chargé. Normal. |
+| Thymeleaf, WebFlux, WebSockets, `TaskExecutionAutoConfiguration` | Conditions non réunies sur ce projet. Normal. |
+
+De même, `Mockito is currently self-attaching to enable the inline mock maker`
+et les avertissements *dynamic agent loading* viennent du JDK 21+ : Mockito
+s'attache à sa propre JVM. C'est **inoffensif** (on peut le faire taire avec
+`-XX:+EnableDynamicAgentLoading`).
+
+> Règle de lecture : dans une trace Spring, chercher `Caused by:` et la classe
+> d'exception la plus profonde. Ne jamais partir en chasse d'un
+> « `@Conditional… did not match` » : il y en a des dizaines même quand tout va bien.
+
+### 3) La vraie cause : l'ordre de priorité des propriétés
+
+`src/main/resources/application.properties` dit bien :
+
+```properties
+spring.datasource.url=jdbc:h2:mem:boarddb
+spring.datasource.driverClassName=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+```
+
+Pourtant Hibernate a tenté PostgreSQL. C'est qu'une **source de propriétés plus
+prioritaire** a fourni `spring.datasource.url`, `…username` et `…password`.
+Spring Boot 3.x classe les sources ainsi (de la plus forte à la plus faible) :
+
+| Rang | Source | Exemple |
+|------|--------|---------|
+| 1 | Propriétés **de test** : `@SpringBootTest(properties=…)`, `@TestPropertySource`, `@DynamicPropertySource` | `properties = "spring.datasource.url=…"` |
+| 2 | Arguments de la ligne de commande | `--spring.datasource.url=…` |
+| 3 | `SPRING_APPLICATION_JSON` | `{"spring":{"datasource":{"url":"…"}}}` |
+| 4 | Paramètres Servlet / JNDI | `web.xml`, serveur d'applications |
+| 5 | Propriétés système Java | `-Dspring.datasource.url=…` |
+| 6 | **Variables d'environnement de l'OS** | `SPRING_DATASOURCE_URL=…` |
+| 7 | `random.*` | `random.int` |
+| 8 | `application-{profil}.properties` **hors** du jar | `./config/`, dossier courant |
+| 9 | `application-{profil}.properties` **dans** le jar | `src/main/resources/` |
+| 10 | `application.properties` **hors** du jar | à côté du jar, ou `./config/` |
+| 11 | `application.properties` **dans** le jar | ← **notre fichier H2** |
+| 12 | `@PropertySource`, `SpringApplication.setDefaultProperties` | valeurs par défaut |
+
+Le rang 6 écrase donc le rang 11. Et avec le **relaxed binding**, Spring Boot
+convertit `SPRING_DATASOURCE_URL` en `spring.datasource.url`,
+`SPRING_DATASOURCE_DRIVER_CLASS_NAME` en `spring.datasource.driver-class-name`,
+`SPRING_PROFILES_ACTIVE` en `spring.profiles.active`. Règle : majuscules, les
+points deviennent des `_`, les tirets disparaissent.
+
+D'où viennent ces variables ? Sur un poste Windows, le plus souvent :
+
+- des variables système ou utilisateur définies pour un autre projet
+  (PostgreSQL, Docker, un précédent tutoriel) ;
+- `SPRING_APPLICATION_JSON` ou `SPRING_PROFILES_ACTIVE=prod` ;
+- la *Run Configuration* de l'IDE (IntelliJ / Eclipse / VS Code) ;
+- un `application.properties` ou `application-prod.properties` laissé dans le
+  dossier courant, dans `./config/` ou à côté du jar (rang 8/10 !) ;
+- un profil actif qui charge un fichier PostgreSQL.
+
+Pour voir ce que la machine fournit réellement :
+
+```bash
+# Git Bash
+env | grep -iE 'spring|datasource|database|postgres'
+ls -la ./config/application*.properties ./application*.properties 2>/dev/null
+```
+
+```powershell
+# PowerShell
+Get-ChildItem Env: | Where-Object Name -match 'SPRING|DATASOURCE|POSTGRES'
+```
+
+```bat
+:: Invite de commande Windows
+set SPRING
+```
+
+Et pour confirmer en une commande, sans rien désinstaller :
+
+```bash
+env -u SPRING_DATASOURCE_URL -u SPRING_DATASOURCE_USERNAME \
+    -u SPRING_DATASOURCE_PASSWORD -u SPRING_DATASOURCE_DRIVER_CLASS_NAME \
+    ./mvnw clean verify
+```
+
+### 4) Le piège du « je vais mettre un fichier de test »
+
+Réflexe naturel : créer `src/test/resources/application.properties` avec H2.
+**Ça ne suffit pas.** C'est un fichier de configuration (rang 8–11) : les
+variables d'environnement (rang 6) restent au-dessus. Le test rechuterait sur la
+machine concernée, tout en passant sur la vôtre — le pire genre de bug.
+
+La bonne source est le **rang 1**, réservée aux tests. D'où
+`src/test/java/com/example/Board/TestEnvironment.java` :
+
+```java
+public final class TestEnvironment {
+    public static final String DATASOURCE_URL =
+            "spring.datasource.url=jdbc:h2:mem:boarddb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE";
+    public static final String DATASOURCE_DRIVER =
+            "spring.datasource.driver-class-name=org.h2.Driver";
+    public static final String DATASOURCE_USERNAME =
+            "spring.datasource.username=sa";
+    public static final String DATASOURCE_PASSWORD =
+            "spring.datasource.password=";          // explicite : aucun mot de passe hérité
+    public static final String JPA_DDL_AUTO =
+            "spring.jpa.hibernate.ddl-auto=create-drop"; // schéma neuf à chaque contexte
+    public static final String JPA_DIALECT =
+            "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect";
+    // …
+}
+```
+
+et sur **chacun** des deux tests :
+
+```java
+@SpringBootTest(properties = {
+        TestEnvironment.DATASOURCE_URL,
+        TestEnvironment.DATASOURCE_DRIVER,
+        TestEnvironment.DATASOURCE_USERNAME,
+        TestEnvironment.DATASOURCE_PASSWORD,
+        TestEnvironment.JPA_DDL_AUTO,
+        TestEnvironment.JPA_DIALECT,
+        TestEnvironment.JPA_OPEN_IN_VIEW,
+        TestEnvironment.SWAGGER_UI_PATH
+})
+```
+
+Trois détails qui comptent :
+
+- `@SpringBootTest(properties = …)` est transformé en propriétés *inlined* avec
+  la priorité maximale : **même `SPRING_DATASOURCE_URL` ne peut plus passer**.
+- Les constantes sont `public static final String` : une annotation n'accepte
+  que des **constantes de compilation**, pas un appel de méthode ni un tableau.
+- Centraliser dans `TestEnvironment` évite que les deux tests divergent ; ajouter
+  une propriété se fait une seule fois.
+
+### 5) Vérification reproduite, pas supposée
+
+J'ai rejoué l'incident dans le harnais de vérification en injectant volontairement
+les variables hostiles avant et après le correctif :
+
+```text
+AVANT  + SPRING_DATASOURCE_URL=jdbc:postgresql://…  → 16 tests, 14 OK, 2 erreurs
+        (exactement vos 2 classes, même signature d'échec)
+APRÈS  + SPRING_DATASOURCE_URL / USERNAME / PASSWORD /
+         DRIVER_CLASS_NAME / JPA_DATABASE_PLATFORM = PostgreSQL
+                                                  → 16 tests, 16 OK, 0 erreur
+        le journal contient « jdbc:h2:mem:boarddb user=SA » et « H2Dialect »,
+        et aucune occurrence de « postgresql ».
+SANS AUCUNE VARIABLE                              → 16 tests, 16 OK (non-régression)
+```
+
+### 6) La leçon à retenir
+
+- **Un test doit être hermétique** : même résultat sur un poste propre, sur un
+  poste configuré pour PostgreSQL, et sur un serveur d'intégration continue.
+  Un test qui dépend de l'environnement n'est pas un test, c'est une surprise.
+- **En production, c'est l'inverse et c'est voulu** : on *veut* que les variables
+  d'environnement gagnent sur le jar (configuration 12-factor : une image,
+  plusieurs environnements). Le H2 du fichier reste donc un **défaut de
+  développement** ; on ne le « durcit » pas, on le surcharge proprement par profil.
+- Ne confondez pas **bruit** (rapport de conditions, warning d'agent Mockito) et
+  **signal** (`Caused by:` le plus profond). Savoir trier une trace fait gagner
+  plus de temps que connaître une centaine d'annotations.
 
 ---
 
@@ -660,6 +882,16 @@ mauvais id → 400. Chez vous, `./mvnw clean verify` rejoue tout ça nativement.
    conséquences : une nouvelle colonne dans le DDL H2 au démarrage **et** une nouvelle
    propriété dans `components.schemas.Task`. C'est la démonstration la plus parlante du
    lien entre JPA, Jackson et Swagger.
+10. **Reproduire l'incident B.6, puis l'empêcher.** Définir
+    `SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:1/board`,
+    `SPRING_DATASOURCE_USERNAME=postgres`, `SPRING_DATASOURCE_PASSWORD=faux`, puis lancer
+    `./mvnw clean verify` : **16/16 doivent rester verts** et le journal doit afficher
+    `jdbc:h2:mem:boarddb`. Ensuite, retirer une seule ligne de `TestEnvironment`
+    (par exemple `DATASOURCE_PASSWORD`) et relancer : selon votre machine, le contexte
+    peut échouer — vous venez de mesurer concrètement l'ordre de priorité du tableau B.6.
+    Remettre la ligne, et vérifier que `env | grep -i spring` explique le résultat.
+    *(Git Bash : `export SPRING_DATASOURCE_URL=…` ; PowerShell : `$env:SPRING_DATASOURCE_URL = "…"` ;
+    pour nettoyer : `unset …` / `Remove-Item Env:SPRING_DATASOURCE_URL`.)*
 
 ---
 
@@ -688,3 +920,6 @@ mauvais id → 400. Chez vous, `./mvnw clean verify` rejoue tout ça nativement.
 | **DTO** | Objet dédié au transport HTTP, distinct de l'entité JPA |
 | **`ErrorResponse`** | Interface Spring qui porte un statut HTTP et un `ProblemDetail` |
 | **WebJar** | Jar contenant des ressources web (ici Swagger UI) |
+| **Relaxed binding** | `SPRING_DATASOURCE_URL` ⇒ `spring.datasource.url` : Spring Boot accepte plusieurs écritures d'une même propriété |
+| **Test hermétique** | Test dont le résultat ne dépend pas de la machine : ici H2 imposé par `@SpringBootTest(properties=…)` |
+| **Condition Evaluation Report** | Inventaire des auto-configurations tentées au démarrage ; ses « did not match » sont normaux, pas des erreurs |
