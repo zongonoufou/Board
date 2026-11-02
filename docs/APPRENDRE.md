@@ -637,6 +637,11 @@ Résultats : **0 erreur de compilation** sur 25 fichiers, **16/16 tests verts**,
 `POST` → 201, `/docs` → 302, `/v3/api-docs` → 200 (OpenAPI 3.1.0), URL inconnue → 404,
 mauvais id → 400. Chez vous, `./mvnw clean verify` rejoue tout ça nativement.
 
+Pour B.8, trois contrôles supplémentaires ont été faits avec le profil `postgres`
+actif et quatre variables PostgreSQL : les tests restent à **16/16 sur H2** ;
+l'application utilise bien `org.postgresql.Driver` ; et forcer le driver H2 avec
+une URL PostgreSQL reproduit « claims to not accept jdbcUrl ».
+
 ## B.6 Incident « PostgreSQL au lieu de H2 » : qui décide de la config ?
 
 C'est un incident très formateur, arrivé sur **votre** machine après le premier
@@ -852,6 +857,7 @@ SANS AUCUNE VARIABLE                              → 16 tests, 16 OK (non-régr
   d'environnement gagnent sur le jar (configuration 12-factor : une image,
   plusieurs environnements). Le H2 du fichier reste donc un **défaut de
   développement** ; on ne le « durcit » pas, on le surcharge proprement par profil.
+  C'est exactement ce que fait `application-postgres.properties` : voir **B.8**.
 - Ne confondez pas **bruit** (rapport de conditions, warning d'agent Mockito) et
   **signal** (`Caused by:` le plus profond). Savoir trier une trace fait gagner
   plus de temps que connaître une centaine d'annotations.
@@ -1003,6 +1009,146 @@ avaient le même point commun : une différence entre *l'environnement supposé*
 commandes, mais de savoir **où regarder pour identifier laquelle des deux
 diffère**.
 
+## B.8 « Alors je peux tester avec PostgreSQL tranquillement ? »
+
+Oui… à condition de préciser **ce que « tester » veut dire**. C'est la suite
+logique de B.6 : le même ordre de priorité qui avait *cassé* les tests est ici
+utilisé **volontairement** pour configurer l'application.
+
+### 1) Deux scénarios, deux réponses
+
+| Ce que vous lancez | Base réellement utilisée | Pourquoi |
+|--------------------|--------------------------|----------|
+| `./mvnw spring-boot:run` avec `SPRING_PROFILES_ACTIVE=postgres` | **PostgreSQL** ✅ | L'application lit les variables d'environnement (rang 6) et le fichier de profil (rang 9) |
+| `./mvnw clean verify`, **même avec** `SPRING_DATASOURCE_URL=jdbc:postgresql://…` | **H2** 🔒 | `TestEnvironment` injecte H2 au **rang 1** (`@SpringBootTest(properties=…)`), qui écrase tout |
+
+Donc : vous pouvez installer, démarrer et configurer PostgreSQL sur votre poste
+**sans plus jamais casser les 16 tests** — c'est précisément la garantie ajoutée
+en `e2c96a1`, et je l'ai revérifiée avec le profil `postgres` **actif** pendant
+les tests (16/16, journal H2). Mais `clean verify` ne *validera* pas PostgreSQL :
+il ne fait que confirmer que le code fonctionne sur H2. Pour valider PostgreSQL,
+il faut **démarrer l'application et appeler l'API**.
+
+> Ce n'est pas une limitation gênante, c'est un choix : un test qui exige un
+> serveur PostgreSQL en marche échoue sur tout poste qui n'en a pas (et en CI).
+> On garde donc H2 par défaut, et on rend la vérification PostgreSQL **manuelle
+> et explicite**.
+
+### 2) Le profil `postgres`, ou comment retourner la priorité à son avantage
+
+`src/main/resources/application-postgres.properties` n'est chargé **que** si le
+profil `postgres` est actif. Il est plus prioritaire que `application.properties`
+(rang 9 > 11), mais **moins** prioritaire que les variables d'environnement
+(rang 6). D'où la répartition :
+
+```text
+application-postgres.properties : valeurs NON SECRETES et non variables
+    driver = org.postgresql.Driver        ← le piège n°1
+    URL / user par défaut pour un PG local
+    console H2 désactivée, ddl-auto=update
+variables d'environnement : URL / user / MOT DE PASSE réels
+    SPRING_DATASOURCE_URL, _USERNAME, _PASSWORD  ← écrasent le fichier
+```
+
+**Pourquoi le driver est le piège n°1.** `application.properties` déclare
+`org.h2.Driver`. Si vous ne remplacez **que** l'URL, HikariCP garde le driver H2
+et refuse la connexion. C'est exactement l'erreur que j'ai reproduite dans le
+harnais en B.6 :
+
+```text
+java.lang.RuntimeException: Driver org.h2.Driver claims to not accept jdbcUrl,
+                            jdbc:postgresql://127.0.0.1:1/board
+```
+
+Le profil règle le problème une fois pour toutes : plus besoin d'y penser.
+Comptez toujours **quatre** propriétés : URL, driver, utilisateur, mot de passe.
+
+### 3) Ce que le profil ne met PAS (et pourquoi)
+
+Pas de `spring.jpa.database-platform`. Hibernate 6 ouvre la connexion, lit les
+métadonnées JDBC et déduit `PostgreSQLDialect` tout seul. Le forcer serait
+inutile et fragile (versions de PostgreSQL, variantes). Contraste intéressant
+avec `TestEnvironment`, où l'on **force** `H2Dialect` : là, on veut un contexte
+de test déterministe même quand aucune connexion ne peut être ouverte. Deux
+contextes, deux besoins, deux choix opposés — c'est ça, configurer.
+
+Aucun mot de passe dans le dépôt non plus : un fichier versionné est lu par tous
+ceux qui clonent. Le secret passe par l'environnement (rang 6), précisément la
+source la plus prioritaire.
+
+### 4) Le code est-il réellement compatible PostgreSQL ?
+
+Oui, et ça se vérifie avant de lancer quoi que ce soit :
+
+| Point | Ce qu'on a | PostgreSQL |
+|-------|------------|------------|
+| Noms de tables | `users`, `boards`, `tasks` (pluriel) | ✅ `user` **est réservé**, `users` non. Un `@Table(name="user")` aurait cassé le DDL |
+| Colonnes | `first_name`, `last_name`, `created_at`, `owner_id`, `board_id`, `status`, `email`, `title`, `description` | ✅ aucun mot réservé |
+| `@GeneratedValue(IDENTITY)` | `Long id` | ✅ `generated by default as identity` (PG 10+) |
+| `@Enumerated(EnumType.STRING)` | `A_FAIRE / EN_COURS / TERMINE` | ✅ `varchar`, lisible, pas de type enum natif à migrer |
+| `LocalDateTime` | `createdAt` | ✅ `timestamp` |
+| `@Column(length = 1000)` | `description` | ✅ `varchar(1000)` |
+| Requêtes | JPQL explicites (`b.owner.id`, `t.board.id`) | ✅ indépendantes du dialecte SQL |
+
+Le pilote `postgresql` est déjà en dépendance `runtime` dans le `pom.xml` :
+disponible à l'exécution, absent de la compilation (on ne code jamais contre
+le driver). Et `ddl-auto=update` va créer/alterner les trois tables au premier
+démarrage : utilisez une **base de développement dédiée**, jamais une base de
+production. En production : `validate` + Flyway/Liquibase.
+
+### 5) La recette complète et sa vérification
+
+```powershell
+# une fois, dans psql
+CREATE DATABASE board;
+
+# PowerShell, à chaque session
+$env:SPRING_PROFILES_ACTIVE = "postgres"
+$env:SPRING_DATASOURCE_URL = "jdbc:postgresql://localhost:5432/board"
+$env:SPRING_DATASOURCE_USERNAME = "postgres"
+$env:SPRING_DATASOURCE_PASSWORD = "votre_mot_de_passe"
+.\mvnw.cmd spring-boot:run
+```
+
+Trois preuves que c'est bien PostgreSQL qui tourne (pas H2) :
+
+1. le journal contient `HikariPool-1 - Driver org.postgresql.Driver` et des
+   `create table users (...)` / `alter table ... add constraint ...` ;
+2. `psql -d board -c "\dt"` liste `users`, `boards`, `tasks` ;
+3. un `POST /api/users` écrit une ligne visible avec `SELECT * FROM users;`,
+   et elle **survit à un redémarrage** — l'impossible avec H2 en mémoire.
+
+> Sous PowerShell, `curl` est un alias de `Invoke-WebRequest` : utilisez
+> `curl.exe` (ou `Invoke-RestMethod`) pour les appels HTTP.
+
+Pour revenir à H2 : `Remove-Item Env:SPRING_PROFILES_ACTIVE` (et les trois
+autres variables), puis relancer.
+
+### 6) Et si je veux que JUnit tourne vraiment sur PostgreSQL ?
+
+C'est possible, mais il faut le **décider explicitement** : ajouter un test
+d'intégration opt-in, activé par une variable
+(`@EnabledIfEnvironmentVariable(named = "BOARD_TEST_POSTGRES", matches = "true")`)
+avec `@DynamicPropertySource` qui lit les variables PG, idéalement sur une base
+éphémère **Testcontainers** (Docker). Je ne l'ai pas livré par défaut : un tel
+test exige un serveur (ou Docker) disponible, donc il rendrait
+`./mvnw clean verify` rouge sur la plupart des machines — exactement le défaut
+que B.6 a supprimé. Règle générale : **hermétique par défaut, dépendance externe
+sur opt-in**.
+
+### 7) La leçon
+
+Le même mécanisme sert deux intentions contraires :
+
+- **Configuration applicative** : on *veut* que l'environnement gagne — une
+  image, plusieurs environnements (développement H2, recette/production PostgreSQL).
+- **Configuration de test** : on *veut* que l'environnement perde — même
+  résultat partout.
+
+Savoir lequel des deux on est en train d'écrire évite 90 % des « chez moi ça
+marche ». C'est aussi pour cela que le correctif n'a pas consisté à « interdire
+PostgreSQL » : il a consisté à **placer chaque choix au bon niveau de priorité**.
+
 ---
 
 # Partie C — Exercices pour apprendre en modifiant
@@ -1052,6 +1198,16 @@ diffère**.
     Vous venez d'observer concrètement le tableau du B.7 : la cible est un
     **choix de build**, pas une propriété du JDK. Puis `./mvnw clean verify`
     sans `-D` pour confirmer que la valeur par défaut (17) est restaurée.
+12. **Basculer sur PostgreSQL… et vérifier que les tests s'en moquent.**
+    Activer le profil `postgres` et les 4 variables (B.8), lancer
+    `./mvnw spring-boot:run`, puis `psql -d board -c "\dt"` et un `POST /api/users`.
+    Observer le `Driver org.postgresql.Driver` dans le journal et la ligne qui
+    survit à un redémarrage. Ensuite, **sans rien désactiver**, lancer
+    `./mvnw clean verify` : 16/16 verts, et le journal des tests affiche
+    `jdbc:h2:mem:boarddb`. Pour finir, remettre volontairement
+    `SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.h2.Driver` et relancer l'application :
+    l'erreur « claims to not accept jdbcUrl » réapparaît. Vous venez de toucher
+    du doigt les rangs 1, 6 et 9 du tableau B.6.
 
 ---
 
@@ -1086,3 +1242,5 @@ diffère**.
 | **`--release` / `<java.version>`** | Niveau du bytecode produit par `javac` ; doit être ≤ la version du JDK qui compile |
 | **Maven Wrapper (`mvnw`)** | Script versionné qui épingle la version de Maven : aucun Maven global à installer |
 | **`major version` d'un `.class`** | Numéro de version du bytecode : 61 = Java 17, 65 = Java 21, 69 = Java 25 |
+| **Profil Spring** | Variante de configuration activée par `SPRING_PROFILES_ACTIVE`, chargée depuis `application-{profil}.properties` |
+| **Test opt-in** | Test désactivé par défaut, activé par une variable : permet d'exiger une dépendance externe sans casser le build standard |

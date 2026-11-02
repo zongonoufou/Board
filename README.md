@@ -6,7 +6,7 @@ Application Spring Boot 3.5.6 (Java 17+) organisée en couches
 > 📘 **Vous voulez comprendre, pas seulement utiliser ?**
 > Consultez **[docs/APPRENDRE.md](docs/APPRENDRE.md)** : comment Swagger / OpenAPI a été
 > intégré (auto-configuration, génération du JSON, `@ResponseStatus`, `/docs`), pourquoi
-> chaque correction a été faite, et 11 exercices guidés à réaliser soi-même.
+> chaque correction a été faite, et 12 exercices guidés à réaliser soi-même.
 
 ## 1. Lancer le projet
 
@@ -196,3 +196,59 @@ Les causes, les commandes de diagnostic (`git config --get-all …`,
 `javap -verbose … | grep "major version"`) et la leçon sur « JDK qui exécute »
 vs « version cible du bytecode » sont détaillées dans la **section B.7** de
 [`docs/APPRENDRE.md`](docs/APPRENDRE.md).
+
+## 9. Tester avec PostgreSQL
+
+⚠️ Deux choses différentes, à ne pas confondre :
+
+| Ce que vous lancez | Base réellement utilisée |
+|--------------------|--------------------------|
+| `./mvnw spring-boot:run` avec le profil `postgres` | **PostgreSQL** ✅ |
+| `./mvnw clean verify` (même avec des variables PostgreSQL) | **H2** 🔒 (voulu, tests hermétiques, voir §7) |
+
+Autrement dit : vous pouvez installer/configurer PostgreSQL **sans casser les
+tests**, mais `clean verify` ne *testera* pas PostgreSQL. Pour valider
+réellement l'application contre PostgreSQL, lancez-la et appelez l'API.
+
+**1. Créer une base de développement dédiée** (jamais une base de production) :
+
+```sql
+CREATE DATABASE board;
+```
+
+**2. Activer le profil et fournir les 4 variables** (PowerShell) :
+
+```powershell
+$env:SPRING_PROFILES_ACTIVE = "postgres"
+$env:SPRING_DATASOURCE_URL = "jdbc:postgresql://localhost:5432/board"
+$env:SPRING_DATASOURCE_USERNAME = "postgres"
+$env:SPRING_DATASOURCE_PASSWORD = "votre_mot_de_passe"
+.\mvnw.cmd spring-boot:run
+```
+
+`src/main/resources/application-postgres.properties` fournit déjà le driver
+`org.postgresql.Driver`, désactive la console H2 et laisse Hibernate détecter
+le dialecte. **Le driver est le piège n°1** : remplacer seulement l'URL laisse
+`org.h2.Driver` en place et HikariCP refuse la connexion.
+
+**3. Vérifier** :
+
+```powershell
+psql -d board -c "\dt"                  # boards, tasks, users + 3 séquences
+curl.exe -i http://localhost:8080/docs
+curl.exe -i -X POST 'http://localhost:8080/api/users' `
+  -H 'Content-Type: application/json' `
+  -d '{"firstName":"Ada","lastName":"Lovelace","email":"ada@example.com"}'
+```
+
+> Sous PowerShell, `curl` est un **alias** de `Invoke-WebRequest` (qui n'accepte
+> ni `-X` ni `-H`) : écrire `curl.exe` lève l'ambiguïté.
+
+`ddl-auto=update` crée/altère le schéma au démarrage : pratique en développement,
+à remplacer par `validate` + Flyway/Liquibase en production. Aucun secret n'est
+dans le dépôt. Les tables sont `users` / `boards` / `tasks` (pluriel :
+`user` est un mot réservé en PostgreSQL).
+
+Pour remettre H2 : `Remove-Item Env:SPRING_PROFILES_ACTIVE` puis relancer.
+L'explication complète — le même ordre de priorité que B.6, mais utilisé
+volontairement cette fois — est dans la **section B.8** du guide.
