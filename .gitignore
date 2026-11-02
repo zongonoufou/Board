@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Logs de crash JVM (artefacts locaux, ne pas versionner) ###
+hs_err_pid*.log
+replay_pid*.log
