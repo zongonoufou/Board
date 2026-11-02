@@ -7,6 +7,10 @@ Application Spring Boot 3.5.6 (Java 17+) organisée en couches
 > Consultez **[docs/APPRENDRE.md](docs/APPRENDRE.md)** : comment Swagger / OpenAPI a été
 > intégré (auto-configuration, génération du JSON, `@ResponseStatus`, `/docs`), pourquoi
 > chaque correction a été faite, et 12 exercices guidés à réaliser soi-même.
+>
+> 🧪 **Vous voulez tester maintenant ?** Suivez
+> **[docs/TESTER.md](docs/TESTER.md)** : 3 niveaux pas à pas (16 tests → H2 →
+> PostgreSQL), commandes PowerShell prêtes à copier et sorties attendues.
 
 ## 1. Lancer le projet
 
@@ -128,7 +132,8 @@ Spring MVC (`ErrorResponse`) : une URL inexistante renvoie bien **404**, pas 500
   suppression, sérialisation JSON).
 - `BoardApplicationTests` : chargement du contexte Spring.
 
-Soit **16 tests**, tous verts (`./mvnw clean verify`).
+Soit **16 tests**, tous verts (`./mvnw clean verify`). Procédure détaillée,
+commande par commande : [`docs/TESTER.md`](docs/TESTER.md).
 
 Les deux tests qui démarrent un contexte Spring (`BoardApplicationTests`,
 `BoardApiIntegrationTest`) imposent leurs propres propriétés via
@@ -234,7 +239,7 @@ le dialecte. **Le driver est le piège n°1** : remplacer seulement l'URL laisse
 **3. Vérifier** :
 
 ```powershell
-psql -d board -c "\dt"                  # boards, tasks, users + 3 séquences
+psql -d board -c "\dt"                  # users, boards, tasks
 curl.exe -i http://localhost:8080/docs
 curl.exe -i -X POST 'http://localhost:8080/api/users' `
   -H 'Content-Type: application/json' `
@@ -250,5 +255,8 @@ dans le dépôt. Les tables sont `users` / `boards` / `tasks` (pluriel :
 `user` est un mot réservé en PostgreSQL).
 
 Pour remettre H2 : `Remove-Item Env:SPRING_PROFILES_ACTIVE` puis relancer.
-L'explication complète — le même ordre de priorité que B.6, mais utilisé
-volontairement cette fois — est dans la **section B.8** du guide.
+La **procédure complète de test** (création de la base, 4 variables, 3 preuves,
+test de persistance après redémarrage, retour à H2) est dans
+[`docs/TESTER.md`](docs/TESTER.md) §**Niveau 3**. L'explication — le même ordre
+de priorité que B.6, mais utilisé volontairement cette fois — est dans la
+**section B.8** du guide.
