@@ -7,7 +7,7 @@
 > (`./mvnw spring-boot:run`, port 8080). Pour les exemples `curl`, remplacez `8080` par votre port.
 >
 > Ce guide décrit **le code réel de ce dépôt** et les résultats **réellement observés**
-> (Spring Boot 3.5.6, JDK 25, springdoc 2.8.13, Hibernate 6.6, H2 2.3).
+> (Spring Boot 3.5.6, cible Java 17 — JDK 17/21/25, springdoc 2.8.13, Hibernate 6.6, H2 2.3).
 
 ---
 
@@ -611,6 +611,7 @@ Les deux classes `@SpringBootTest` imposent H2 via `TestEnvironment` : voir
 | Classe de service introuvable | `package` absent / imports invalides | Package = adresse logique |
 | Erreur de syntaxe en fin de `TaskService` | Bloc `package` dupliqué | Toujours lire le fichier jusqu'à la dernière ligne |
 | `cannot find symbol getTitle()` | Lombok non exécuté (JDK 23+) | Déclarer l'annotation processor |
+| `release version 25 not supported` | `--release` > version du JDK qui compile | Cibler le minimum compatible (17), `-Djava.version` pour surcharger |
 | 400 « parameter name not available » | Compilation sans `-parameters` | Nommer explicitement les paramètres |
 | `Could not resolve attribute 'ownerId'` | Getter calculé vu comme propriété JPA | L'introspection a des effets de bord |
 | 500 sur une URL inconnue | `@ExceptionHandler(Exception.class)` | Respecter `ErrorResponse` |
@@ -628,7 +629,11 @@ Pour ne pas livrer du code « qui a l'air juste », j'ai reconstruit en temporai
 3. une simulation de la génération Lombok pour la compilation ;
 4. un lanceur JUnit + l'application démarrée sur un vrai port pour les appels `curl`.
 
-Résultats : **0 erreur de compilation** sur 24 fichiers, **16/16 tests verts**,
+Les sources sont compilées au niveau **17** (`-17`), ce qui prouve qu'elles ne
+dépendent d'aucune API apparue après Java 17 : c'est ce qui permet de baisser la
+cible du `pom.xml` sans risque (voir **B.7**).
+
+Résultats : **0 erreur de compilation** sur 25 fichiers, **16/16 tests verts**,
 `POST` → 201, `/docs` → 302, `/v3/api-docs` → 200 (OpenAPI 3.1.0), URL inconnue → 404,
 mauvais id → 400. Chez vous, `./mvnw clean verify` rejoue tout ça nativement.
 
@@ -851,6 +856,153 @@ SANS AUCUNE VARIABLE                              → 16 tests, 16 OK (non-régr
   **signal** (`Caused by:` le plus profond). Savoir trier une trace fait gagner
   plus de temps que connaître une centaine d'annotations.
 
+## B.7 Incident « release version 25 not supported » : qui compile quoi ?
+
+Deuxième incident sur votre poste, immédiatement après le `git pull` :
+
+```text
+[INFO] Compiling 19 source files with javac [debug parameters release 25] to target\classes
+[ERROR] Fatal error compiling: error: release version 25 not supported
+```
+
+### 1) Deux versions de Java… et deux rôles différents
+
+| Ce que l'on regarde | Ce que c'est | Commande |
+|---------------------|--------------|----------|
+| Le **JDK qui exécute Maven** | Le `java`/`javac` réellement lancé, choisi via `JAVA_HOME` / `PATH` | `java -version`, `./mvnw -version` |
+| La **cible de compilation** | Le niveau du bytecode produit, `javac --release N`, issu de `<java.version>` | `pom.xml`, `javap -verbose` |
+
+Règle simple : **`javac` ne sait compiler que vers une version inférieure ou
+égale à la sienne.** Il peut produire du bytecode « plus vieux », jamais « plus
+neuf » :
+
+| JDK installé | `--release 17` | `--release 21` | `--release 25` |
+|--------------|----------------|----------------|----------------|
+| 17 | ✅ | ❌ | ❌ |
+| 21 | ✅ | ✅ | ❌ |
+| 25 | ✅ | ✅ | ✅ |
+
+Le `pom.xml` initial (et ma première version) disait `<java.version>25</java.version>`.
+Sur votre JDK — 17 ou 21, à confirmer avec `java -version` — `javac` a donc
+refusé : *« release version 25 not supported »*. Ce n'est **ni** un problème de
+dépendances, **ni** Spring, **ni** Lombok : la compilation s'arrête avant même
+de lire le code.
+
+### 2) Pourquoi la cible est maintenant 17
+
+- Spring Boot **3.5 demande Java 17 au minimum** : 17 est le plancher officiel.
+- Toutes les sources ont été compilées avec `-17` dans le harnais de
+  vérification (B.5) : aucune API postérieure à Java 17 n'est utilisée.
+- Choisir **17 maximise la portabilité** : le même `./mvnw clean verify`
+  fonctionne avec un JDK 17, 21 ou 25. C'est exactement la même logique qu'en
+  B.6 : **ne pas faire dépendre le build de la machine du développeur**.
+
+Cela ne vous empêche pas d'utiliser un JDK récent : un JDK 21 compile très bien
+avec `--release 17`. Et si vous voulez volontairement produire du bytecode 21
+(parce que tout votre parc est en 21), `-Djava.version=21` le permet.
+
+> À retenir : on déclare dans le projet la **version minimale compatible**,
+> pas la version du JDK installé sur le poste de celui qui écrit le code.
+
+### 3) Maven : pourquoi `-D…` écrase `<properties>`
+
+Dans le `pom.xml`, le plugin ne contient pas de nombre en dur :
+
+```xml
+<properties>
+    <java.version>17</java.version>
+</properties>
+...
+<release>${java.version}</release>
+```
+
+`${java.version}` est une **propriété Maven interpolée**. Maven résout les
+propriétés dans cet ordre (simplifié) :
+
+1. **propriétés utilisateur** passées en ligne de commande : `-Djava.version=21` ;
+2. propriétés système Java ;
+3. `<properties>` du `pom.xml` (et du parent `spring-boot-starter-parent`) ;
+4. valeurs par défaut.
+
+Donc `./mvnw -Djava.version=21 clean verify` remplace la valeur du pom **sans
+modifier le fichier**. C'est le même mécanisme de priorité qu'en B.6, mais dans
+un autre outil : retenez l'idée générale « **ce qu'on passe explicitement à la
+commande gagne sur ce qui est écrit dans un fichier** ».
+
+### 4) `mvn`, `mvnw`, PowerShell : trois confusions fréquentes
+
+Votre log contient aussi :
+
+```text
+PS> ./mvn clean verify
+./mvn : The term './mvn' is not recognized ...
+```
+
+- `mvn` = un **Maven installé globalement** sur la machine (absent ici).
+- `mvnw` = le **Maven Wrapper** versionné dans le dépôt : le script télécharge
+  et utilise la version épinglée dans `.mvn/wrapper/maven-wrapper.properties`.
+  C'est fait pour que deux personnes obtiennent le même build sans installer Maven.
+- Sous **PowerShell**, `./mvnw` a fonctionné car Windows résout l'extension via
+  `PATHEXT` et trouve `mvnw.cmd`. La forme sans ambiguïté est
+  `.\mvnw.cmd clean verify`. Dans **Git Bash**, c'est `./mvnw` (script shell).
+- `./mvnw -version` est le réflexe à avoir : il affiche la version de Maven **et**
+  le JDK utilisé, donc il répond en une commande à « quel Java compile ? ».
+
+Si plusieurs JDK cohabitent, fixez `JAVA_HOME` **pour la session** :
+
+```powershell
+# PowerShell
+$env:JAVA_HOME = "C:\Program Files\Java\jdk-21"
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+.\mvnw.cmd -version
+.\mvnw.cmd clean verify
+```
+
+```bash
+# Git Bash
+export JAVA_HOME="/c/Program Files/Java/jdk-21"
+export PATH="$JAVA_HOME/bin:$PATH"
+./mvnw -version && ./mvnw clean verify
+```
+
+### 5) Le `fatal: Cannot fast-forward to multiple branches`
+
+Apparu juste avant, puis disparu au `git pull` suivant (qui a bien avancé vers
+`e2c96a1`). `git pull` fait **deux** choses : `git fetch` (télécharger) puis
+`git merge` (fusionner). Le message vient de l'étape de fusion : avec
+`--ff-only`, Git refuse quand il a **plusieurs têtes à fusionner** — typiquement
+une configuration locale où `branch.<nom>.merge` contient plusieurs valeurs ou
+où `remote.origin.fetch` mappe plusieurs branches. Le second appel n'a plus
+rencontré cette ambiguïté ; le contenu était correct, seul le *chemin* de fusion
+était ambigu.
+
+Pour ne jamais dépendre de cette ambiguïté, nommez la source explicitement :
+
+```bash
+git pull --ff-only origin arena/59f43911-board
+# équivalent, en deux étapes plus lisibles :
+git fetch origin
+git merge --ff-only origin/arena/59f43911-board
+```
+
+Diagnostic si le message revient :
+
+```bash
+git branch -vv
+git config --get-all remote.origin.fetch
+git config --get-all branch.arena/59f43911-board.merge
+```
+
+### 6) La leçon
+
+Un build portable, c'est : **un outil épinglé** (`mvnw`), **une cible minimale**
+(17), **des tests hermétiques** (B.6), et **des commandes explicites**. Les trois
+incidents de cette session (PostgreSQL, rapport de conditions, version Java)
+avaient le même point commun : une différence entre *l'environnement supposé* et
+*l'environnement réel*. La compétence à développer n'est pas de retenir les
+commandes, mais de savoir **où regarder pour identifier laquelle des deux
+diffère**.
+
 ---
 
 # Partie C — Exercices pour apprendre en modifiant
@@ -892,6 +1044,14 @@ SANS AUCUNE VARIABLE                              → 16 tests, 16 OK (non-régr
     Remettre la ligne, et vérifier que `env | grep -i spring` explique le résultat.
     *(Git Bash : `export SPRING_DATASOURCE_URL=…` ; PowerShell : `$env:SPRING_DATASOURCE_URL = "…"` ;
     pour nettoyer : `unset …` / `Remove-Item Env:SPRING_DATASOURCE_URL`.)*
+11. **Voir le bytecode changer de version.** Lancer
+    `./mvnw -q -Djava.version=17 clean package` puis
+    `javap -verbose -cp target/classes com.example.Board.model.Task | grep "major version"`
+    → `61` (Java 17). Relancer avec `-Djava.version=21` → `65`. Avec
+    `-Djava.version=25` sur un JDK 21 → l'erreur `release version 25 not supported`.
+    Vous venez d'observer concrètement le tableau du B.7 : la cible est un
+    **choix de build**, pas une propriété du JDK. Puis `./mvnw clean verify`
+    sans `-D` pour confirmer que la valeur par défaut (17) est restaurée.
 
 ---
 
@@ -923,3 +1083,6 @@ SANS AUCUNE VARIABLE                              → 16 tests, 16 OK (non-régr
 | **Relaxed binding** | `SPRING_DATASOURCE_URL` ⇒ `spring.datasource.url` : Spring Boot accepte plusieurs écritures d'une même propriété |
 | **Test hermétique** | Test dont le résultat ne dépend pas de la machine : ici H2 imposé par `@SpringBootTest(properties=…)` |
 | **Condition Evaluation Report** | Inventaire des auto-configurations tentées au démarrage ; ses « did not match » sont normaux, pas des erreurs |
+| **`--release` / `<java.version>`** | Niveau du bytecode produit par `javac` ; doit être ≤ la version du JDK qui compile |
+| **Maven Wrapper (`mvnw`)** | Script versionné qui épingle la version de Maven : aucun Maven global à installer |
+| **`major version` d'un `.class`** | Numéro de version du bytecode : 61 = Java 17, 65 = Java 21, 69 = Java 25 |

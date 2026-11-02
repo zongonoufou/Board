@@ -20,7 +20,16 @@
     <description>Board application</description>
 
     <properties>
-        <java.version>25</java.version>
+        <!--
+          Cible de compilation (option release de javac). Spring Boot 3.5 demande
+          au minimum Java 17 ; le code n'utilise aucune API posterieure.
+          On choisit donc 17 : le build fonctionne avec un JDK 17, 21 ou 25.
+          Un JDK ne peut jamais compiler vers une version superieure a la sienne
+          (d'ou l'erreur "release version 25 not supported" sur un JDK 21).
+          Pour viser volontairement plus recent : ./mvnw -Djava.version=21 clean verify
+          (les proprietes -D de Maven sont prioritaires sur <properties>).
+        -->
+        <java.version>17</java.version>
         <lombok.version>1.18.42</lombok.version>
     </properties>
 

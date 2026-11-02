@@ -1,21 +1,35 @@
 # Board — API REST de tableaux / tâches
 
-Application Spring Boot 3.5.6 (Java 25) organisée en couches
+Application Spring Boot 3.5.6 (Java 17+) organisée en couches
 `Controller → Service → Repository → Model`, avec JPA/H2 et validation.
 
 > 📘 **Vous voulez comprendre, pas seulement utiliser ?**
 > Consultez **[docs/APPRENDRE.md](docs/APPRENDRE.md)** : comment Swagger / OpenAPI a été
 > intégré (auto-configuration, génération du JSON, `@ResponseStatus`, `/docs`), pourquoi
-> chaque correction a été faite, et 9 exercices guidés à réaliser soi-même.
+> chaque correction a été faite, et 11 exercices guidés à réaliser soi-même.
 
 ## 1. Lancer le projet
 
-Prérequis : **JDK 25** (le `pom.xml` fixe `<java.version>25</java.version>`).
+Prérequis : **JDK 17 ou plus** (17, 21 ou 25 conviennent). Le `pom.xml` cible
+`<java.version>17</java.version>`, c'est-à-dire `javac --release 17` : c'est le
+minimum demandé par Spring Boot 3.5 et le code n'utilise aucune API plus récente.
 
 ```bash
+java -version                # le JDK qui EXECUTE Maven
+./mvnw -version              # confirme Maven + le JDK réellement utilisés
 ./mvnw clean verify          # compilation + tous les tests
 ./mvnw spring-boot:run       # démarrage sur http://localhost:8080
 ```
+
+`mvnw` est le **Maven Wrapper** fourni par le projet (version épinglée dans
+`.mvn/wrapper/maven-wrapper.properties`) : il n'y a pas besoin de Maven installé.
+`mvn` (sans `w`) désignerait un Maven global — d'où l'erreur « `./mvn` is not
+recognized » si vous tapez cette forme. En PowerShell, `.\mvnw.cmd clean verify`
+est la forme la plus explicite.
+
+Pour compiler volontairement avec une cible plus récente (JDK 21 ou 25
+installé) : `./mvnw -Djava.version=21 clean verify`. Les propriétés `-D` de
+Maven sont prioritaires sur `<properties>`.
 
 - Swagger UI : `http://localhost:8080/docs` (JSON OpenAPI : `/v3/api-docs`)
 - Console H2 : `http://localhost:8080/h2-console` (JDBC `jdbc:h2:mem:boarddb`, user `sa`)
@@ -157,3 +171,28 @@ env -u SPRING_DATASOURCE_URL -u SPRING_DATASOURCE_USERNAME \
 L'explication complète (ordre de priorité des propriétés Spring Boot, pourquoi
 le rapport de conditions est inoffensif, comment le corriger) est dans la
 **section B.6** de [`docs/APPRENDRE.md`](docs/APPRENDRE.md).
+
+## 8. Dépannage : `release version 25 not supported` / `git pull`
+
+**`error: release version 25 not supported`** : le JDK qui exécute Maven est
+plus ancien que la cible de compilation. Depuis la mise à jour, la cible est
+17 : `java -version` doit indiquer **17 ou plus**, puis `./mvnw clean verify`.
+Si plusieurs JDK sont installés, pointez `JAVA_HOME` sur le bon (voir B.7 du
+guide). Avec un JDK 21, `./mvnw -Djava.version=21 clean verify` fonctionne aussi.
+
+**`fatal: Cannot fast-forward to multiple branches`** : `git pull` = `fetch` +
+`merge`. Le message vient de la fusion : `--ff-only` refuse quand Git a
+plusieurs têtes à fusionner (configuration `branch.<nom>.merge` multiple).
+Le second `pull` a fonctionné ; pour ne plus dépendre de cette ambiguïté,
+nommez explicitement la source :
+
+```bash
+git pull --ff-only origin arena/59f43911-board
+# ou en deux étapes :
+git fetch origin && git merge --ff-only origin/arena/59f43911-board
+```
+
+Les causes, les commandes de diagnostic (`git config --get-all …`,
+`javap -verbose … | grep "major version"`) et la leçon sur « JDK qui exécute »
+vs « version cible du bytecode » sont détaillées dans la **section B.7** de
+[`docs/APPRENDRE.md`](docs/APPRENDRE.md).
