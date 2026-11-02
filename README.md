@@ -12,7 +12,7 @@ Prérequis : **JDK 25** (le `pom.xml` fixe `<java.version>25</java.version>`).
 ./mvnw spring-boot:run       # démarrage sur http://localhost:8080
 ```
 
-- Swagger UI : `http://localhost:8080/swagger-ui.html`
+- Swagger UI : `http://localhost:8080/docs` (JSON OpenAPI : `/v3/api-docs`)
 - Console H2 : `http://localhost:8080/h2-console` (JDBC `jdbc:h2:mem:boarddb`, user `sa`)
 
 La base H2 est en mémoire et le schéma est créé automatiquement
@@ -38,6 +38,7 @@ dépendance `runtime` pour un déploiement réel.
 | 13 | `GET /api/boards/{id}/tasks` renvoyait `200 []` pour un tableau inexistant. | Vérification de l'existence du tableau → `404`. |
 | 14 | Les getters JSON `getOwnerId()` / `getBoardId()` faisaient échouer les requêtes dérivées Spring Data au démarrage (`Could not resolve attribute 'ownerId'`). | Requêtes JPQL explicites (`@Query`) dans `BoardRepository` et `TaskRepository`. |
 | 15 | `@PathVariable` / `@RequestParam` sans nom dépendaient du flag de compilation `-parameters`. | Noms explicites dans les annotations + `<parameters>true</parameters>` dans `maven-compiler-plugin`. |
+| 16 | Le `@ExceptionHandler(Exception.class)` « fourre-tout » transformait les exceptions Spring MVC en **500** : une URL inconnue (`/docs`, `/toto`) renvoyait 500 au lieu de 404. | Le gestionnaire respecte désormais le statut porté par `ErrorResponse` (404, 405, 400, 415…), ne journalise en 500 que les vraies erreurs inattendues, et `/docs` est configuré comme entrée Swagger UI. |
 
 ## 3. Méthodes et endpoints ajoutés
 
@@ -83,7 +84,23 @@ curl -X POST 'http://localhost:8080/api/boards/1/tasks' \
   -H 'Content-Type: application/json' -d '{"title":"Première tâche","description":"…"}'
 ```
 
-## 4. Tests
+## 4. Réponses d'erreur
+
+`GlobalExceptionHandler` renvoie un corps homogène
+`{timestamp, status, error, message, path, fieldErrors}` :
+
+| Code | Cas |
+|------|-----|
+| 400 | validation `@Valid`, JSON illisible, paramètre mal typé |
+| 404 | utilisateur/tableau/tâche absent **ou URL inconnue** |
+| 405 | méthode HTTP non autorisée |
+| 409 | email déjà utilisé, contrainte d'intégrité |
+| 500 | erreur inattendue (stack trace journalisée côté serveur, jamais exposée) |
+
+Le gestionnaire « fourre-tout » respecte le statut porté par les exceptions
+Spring MVC (`ErrorResponse`) : une URL inexistante renvoie bien **404**, pas 500.
+
+## 5. Tests
 
 - `UserServiceTest`, `BoardServiceTest`, `TaskServiceTest` : tests unitaires
   Mockito (unicité email, statut imposé, mise à jour partielle, rattachement au tableau).
@@ -94,7 +111,7 @@ curl -X POST 'http://localhost:8080/api/boards/1/tasks' \
 
 Soit **16 tests**, tous verts (`./mvnw clean verify`).
 
-## 5. Piste d'amélioration
+## 6. Piste d'amélioration
 
 Pour une API publique, remplacer l'exposition directe des entités JPA par des
 DTO de requête/réponse afin de découpler complètement le contrat HTTP du

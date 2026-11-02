@@ -28,6 +28,13 @@ class BoardApiIntegrationTest {
 
     @Test
     void parcoursCompletEtGestionDesErreurs() {
+        // Documentation : /docs est l'entree Swagger UI configuree dans application.properties
+        ResponseEntity<String> docs = restTemplate.getForEntity("/docs", String.class);
+        assertThat(docs.getStatusCode().is2xxSuccessful() || docs.getStatusCode().is3xxRedirection())
+                .isTrue();
+        assertThat(restTemplate.getForEntity("/v3/api-docs", String.class)
+                .getStatusCode().is2xxSuccessful()).isTrue();
+
         Map<String, Object> user = new HashMap<>();
         user.put("firstName", "Ada");
         user.put("lastName", "Lovelace");
@@ -53,6 +60,19 @@ class BoardApiIntegrationTest {
                 restTemplate.postForEntity("/api/users", invalidUser, JsonNode.class);
         assertThat(badUser.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(badUser.getBody().get("fieldErrors").size()).isGreaterThan(0);
+
+        // URL inconnue -> 404 et non 500 (le handler global respecte ErrorResponse)
+        ResponseEntity<JsonNode> unknown =
+                restTemplate.getForEntity("/cette-page-nexiste-pas", JsonNode.class);
+        assertThat(unknown.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(unknown.getBody().get("status").asInt()).isEqualTo(404);
+
+        // Identifiant non numerique -> 400, methode HTTP interdite -> 405
+        assertThat(restTemplate.getForEntity("/api/users/pas-un-id", JsonNode.class)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(restTemplate.exchange("/api/users", HttpMethod.DELETE,
+                new HttpEntity<>(new HashMap<>()), JsonNode.class).getStatusCode())
+                .isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
 
         // Mise a jour partielle d'un utilisateur
         Map<String, Object> userPatch = new HashMap<>();
